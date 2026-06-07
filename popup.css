@@ -63,6 +63,7 @@ p {
 }
 
 .status,
+.pageStatus,
 .nextRun {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -71,6 +72,42 @@ p {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(36, 34, 32, 0.86);
+}
+
+.pageStatus {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.pageStatus .label {
+  margin-bottom: 4px;
+}
+
+.projectText {
+  margin-top: 5px;
+}
+
+.statusDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--soft);
+  box-shadow: 0 0 0 4px rgba(143, 134, 125, 0.14);
+}
+
+.statusDot.ready {
+  background: #49d17c;
+  box-shadow: 0 0 0 4px rgba(73, 209, 124, 0.16);
+}
+
+.statusDot.warning {
+  background: #f0b84e;
+  box-shadow: 0 0 0 4px rgba(240, 184, 78, 0.16);
+}
+
+.statusDot.offline {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px rgba(255, 107, 116, 0.16);
 }
 
 .nextRun {
@@ -168,6 +205,12 @@ button.primary {
   border-color: #9d5835;
   background: linear-gradient(180deg, #d97745, #ae5c35);
   color: #fffaf4;
+}
+
+button.secondary {
+  border-color: #6d594d;
+  background: #302c28;
+  color: #f7e3d4;
 }
 
 button.ghost {

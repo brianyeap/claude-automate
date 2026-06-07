@@ -48,6 +48,14 @@ async function handleMessage(message) {
     return getUsage();
   }
 
+  if (message.type === "GET_PAGE_STATUS") {
+    return getPageStatus();
+  }
+
+  if (message.type === "TEST_PROMPT") {
+    return testPrompt(message.prompt);
+  }
+
   if (message.type === "SCHEDULE_PROMPT") {
     const runAt = Number(message.runAt);
     if (!Number.isFinite(runAt) || runAt <= Date.now()) throw new Error("Schedule time must be in the future.");
@@ -87,6 +95,45 @@ async function getUsage() {
   const cache = { ...usage, lastPulledAt: Date.now() };
   await chrome.storage.local.set({ usageCache: cache });
   return cache;
+}
+
+async function getPageStatus() {
+  const tab = await findActiveTab();
+  if (!tab?.id || !tab.url?.startsWith("https://claude.ai/code")) {
+    return {
+      isClaudeCodePage: false,
+      hasPromptEditor: false,
+      projectName: "",
+      checkedAt: Date.now()
+    };
+  }
+
+  try {
+    return await sendToContent(tab.id, { type: "GET_PAGE_STATUS" });
+  } catch (error) {
+    return {
+      isClaudeCodePage: true,
+      hasPromptEditor: false,
+      projectName: "",
+      checkedAt: Date.now()
+    };
+  }
+}
+
+async function testPrompt(prompt) {
+  if (!prompt?.trim()) throw new Error("No prompt was provided.");
+  const tab = await getOrOpenClaudeTab();
+  await waitForTabReady(tab.id);
+  return sendToContent(tab.id, { type: "TEST_PROMPT", prompt });
+}
+
+async function findActiveTab() {
+  const [lastFocusedTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (lastFocusedTab) return lastFocusedTab;
+
+  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+  const focusedWindow = windows.find(window => window.focused);
+  return focusedWindow?.tabs?.find(tab => tab.active) || null;
 }
 
 async function getOrOpenClaudeTab() {

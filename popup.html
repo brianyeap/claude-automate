@@ -27,10 +27,21 @@
         </div>
       </section>
 
+      <section class="pageStatus" aria-live="polite">
+        <span id="pageStatusDot" class="statusDot"></span>
+        <div>
+          <span class="label">Claude page</span>
+          <strong id="pageStatusText">Checking page…</strong>
+          <p id="projectText" class="projectText">Project unavailable</p>
+        </div>
+      </section>
+
       <label class="field">
         <span>Prompt to send</span>
         <textarea id="promptInput" rows="7" placeholder="Paste the prompt Claude should run after the reset…"></textarea>
       </label>
+
+      <button id="testPromptButton" class="secondary" type="button">Test prompt paste</button>
 
       <div class="grid">
         <label class="field">

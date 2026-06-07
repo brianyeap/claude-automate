@@ -10,9 +10,53 @@
   });
 
   async function handleMessage(message) {
+    if (message.type === "GET_PAGE_STATUS") return readPageStatus();
     if (message.type === "GET_USAGE") return readUsage();
+    if (message.type === "TEST_PROMPT") return testPrompt(message.prompt);
     if (message.type === "RUN_PROMPT") return runPrompt(message.prompt);
     throw new Error(`Unknown content message: ${message.type}`);
+  }
+
+  function readPageStatus() {
+    return {
+      isClaudeCodePage: location.href.startsWith("https://claude.ai/code"),
+      hasPromptEditor: Boolean(findPromptEditor()),
+      projectName: findProjectName(),
+      checkedAt: Date.now()
+    };
+  }
+
+  function findProjectName() {
+    const repoPattern = /(?:^|\s)([\w.-]+\/[\w.-]+)(?:\s|$)/;
+    const allCandidates = [...document.querySelectorAll("body *")]
+      .filter(isVisible)
+      .map(el => compactText(el.textContent))
+      .filter(isUsefulProjectText);
+
+    const repoMatch = allCandidates
+      .map(text => text.match(repoPattern)?.[1])
+      .find(Boolean);
+    if (repoMatch) return repoMatch.split("/").pop();
+
+    const chipCandidates = [...document.querySelectorAll("main button, main a, main [role='button'], main [class*='chip'], main [class*='badge']")]
+      .filter(isVisible)
+      .map(el => compactText(el.textContent))
+      .filter(isUsefulProjectText);
+
+    const chipProject = chipCandidates
+      .map(text => text.match(/^[\w.-]+$/)?.[0])
+      .find(text => !isIgnoredProjectText(text));
+    if (chipProject) return chipProject;
+
+    const slashProject = allCandidates
+      .map(text => text.match(repoPattern)?.[1]?.split("/").pop())
+      .find(Boolean);
+    if (slashProject) return slashProject;
+
+    const compactTitle = document.title
+      .replace(/\s*[|–-]\s*Claude.*$/i, "")
+      .trim();
+    return isUsefulProjectText(compactTitle) ? compactTitle : "";
   }
 
   async function readUsage() {
@@ -62,6 +106,36 @@
     return { ok: true, sentAt: Date.now() };
   }
 
+  async function testPrompt(prompt) {
+    if (!prompt?.trim()) throw new Error("No prompt was provided.");
+    if (!location.href.startsWith("https://claude.ai/code")) {
+      location.href = "https://claude.ai/code";
+      await sleep(1800);
+    }
+
+    await waitForSelector('div[aria-label="Prompt"][contenteditable="true"]', 15_000);
+    await ensureRepoSelected();
+
+    const editor = findPromptEditor();
+    if (!editor) throw new Error("Could not find Claude prompt box.");
+
+    const expected = prompt.trim();
+    const normalizedExpected = compactText(expected);
+    await setEditorText(editor, expected);
+    await sleep(300);
+    if (!getEditorText(editor).includes(normalizedExpected.slice(0, 40))) {
+      throw new Error("Prompt paste could not be verified.");
+    }
+
+    await clearEditorText(editor);
+    await sleep(200);
+    if (getEditorText(editor)) {
+      throw new Error("Prompt pasted, but the prompt box could not be cleared.");
+    }
+
+    return { ok: true, testedAt: Date.now() };
+  }
+
   async function ensureRepoSelected() {
     const selectRepoButton = [...document.querySelectorAll("button")]
       .find(button => isVisible(button) && /Select repo/i.test(button.textContent || ""));
@@ -107,6 +181,21 @@
     }
   }
 
+  async function clearEditorText(editor) {
+    editor.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand("delete");
+    editor.textContent = "";
+    editor.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "deleteContentBackward"
+    }));
+  }
+
   function findPromptEditor() {
     return [...document.querySelectorAll('div[aria-label="Prompt"][contenteditable="true"]')]
       .filter(isVisible)
@@ -123,6 +212,10 @@
         return { button, score: yDistance + Math.max(0, er.left - r.right) };
       })
       .sort((a, b) => a.score - b.score)[0]?.button;
+  }
+
+  function getEditorText(editor) {
+    return compactText(editor.innerText || editor.textContent);
   }
 
   function parseResetText(text) {
@@ -173,6 +266,18 @@
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+  }
+
+  function compactText(text) {
+    return (text || "").replace(/\s+/g, " ").trim();
+  }
+
+  function isUsefulProjectText(text) {
+    return Boolean(text) && text.length <= 100 && !isIgnoredProjectText(text);
+  }
+
+  function isIgnoredProjectText(text) {
+    return /^(Claude|Claude Code|Research preview|New session|Sessions|Welcome|Needs input|Default|main|\+)$|Usage limit reached|Feature of the week|Describe a task|Accept edits|Sonnet|Low/i.test(text);
   }
 
   function sleep(ms) {
