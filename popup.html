@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claude Limit Runner</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="brand">
+        <div class="mark">✶</div>
+        <div>
+          <h1>Claude Limit Runner</h1>
+          <p id="usageSummary">Checking usage…</p>
+        </div>
+      </header>
+
+      <section class="status" aria-live="polite">
+        <div>
+          <span class="label">Current session</span>
+          <strong id="sessionUsage">-</strong>
+        </div>
+        <div>
+          <span class="label">Next reset</span>
+          <strong id="resetTime">-</strong>
+        </div>
+      </section>
+
+      <label class="field">
+        <span>Prompt to send</span>
+        <textarea id="promptInput" rows="7" placeholder="Paste the prompt Claude should run after the reset…"></textarea>
+      </label>
+
+      <div class="grid">
+        <label class="field">
+          <span>Manual time</span>
+          <input id="manualTime" type="datetime-local">
+        </label>
+        <label class="field">
+          <span>Repo fallback</span>
+          <input id="repoInput" type="text" placeholder="brianyeap/transcendence">
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="useResetButton" class="primary" type="button">Use next limit reset</button>
+        <button id="scheduleButton" type="button">Schedule manual time</button>
+      </div>
+
+      <section class="nextRun">
+        <span class="label">Scheduled run</span>
+        <strong id="scheduledText">Nothing scheduled</strong>
+        <button id="cancelButton" class="ghost" type="button">Cancel</button>
+      </section>
+
+      <p id="message" class="message"></p>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

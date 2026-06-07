@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Limit Runner",
+  "description": "Schedule a Claude Code prompt for your next usage reset or a custom time.",
+  "version": "0.1.0",
+  "permissions": ["alarms", "notifications", "storage", "tabs", "scripting"],
+  "host_permissions": ["https://claude.ai/*"],
+  "action": {
+    "default_title": "Claude Limit Runner",
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
