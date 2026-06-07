@@ -15,5 +15,5 @@ A local Chrome extension that reads Claude Code usage from the authenticated Cla
 
 - The extension does not read cookies or session tokens.
 - It pulls usage from `https://claude.ai/code#settings/usage` and caches the result for one minute.
-- If Claude asks for a repo before sending, the extension uses the optional repo fallback field. If that is empty, it picks the first visible repo option.
+- If Claude asks for a repo before sending, the extension picks the first visible repo option.
 - Keep Chrome running for the scheduled alarm to fire.

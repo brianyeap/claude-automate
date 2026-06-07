@@ -11,7 +11,7 @@
 
   async function handleMessage(message) {
     if (message.type === "GET_USAGE") return readUsage();
-    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt, message.repo);
+    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt);
     throw new Error(`Unknown content message: ${message.type}`);
   }
 
@@ -40,7 +40,7 @@
     };
   }
 
-  async function runPrompt(prompt, repo) {
+  async function runPrompt(prompt) {
     if (!prompt?.trim()) throw new Error("No prompt was provided.");
     if (!location.href.startsWith("https://claude.ai/code")) {
       location.href = "https://claude.ai/code";
@@ -48,7 +48,7 @@
     }
 
     await waitForSelector('div[aria-label="Prompt"][contenteditable="true"]', 15_000);
-    await ensureRepoSelected(repo);
+    await ensureRepoSelected();
 
     const editor = findPromptEditor();
     if (!editor) throw new Error("Could not find Claude prompt box.");
@@ -62,7 +62,7 @@
     return { ok: true, sentAt: Date.now() };
   }
 
-  async function ensureRepoSelected(repo) {
+  async function ensureRepoSelected() {
     const selectRepoButton = [...document.querySelectorAll("button")]
       .find(button => isVisible(button) && /Select repo/i.test(button.textContent || ""));
 
@@ -71,20 +71,11 @@
     selectRepoButton.click();
     await sleep(700);
 
-    let candidate = null;
-    if (repo) {
-      candidate = [...document.querySelectorAll("button, [role='option'], [role='menuitem'], div, span")]
-        .filter(isVisible)
-        .find(el => (el.textContent || "").trim() === repo);
-    }
-
-    if (!candidate) {
-      const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
-      const popup = search?.closest("[role='dialog'], [role='listbox']") || search?.parentElement?.parentElement?.parentElement;
-      candidate = [...(popup || document).querySelectorAll("button, [role='option'], [role='menuitem'], div")]
-        .filter(isVisible)
-        .find(el => /^[\w.-]+\/[\w.-]+$/.test((el.textContent || "").trim()));
-    }
+    const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
+    const popup = search?.closest("[role='dialog'], [role='listbox']") || search?.parentElement?.parentElement?.parentElement;
+    const candidate = [...(popup || document).querySelectorAll("button, [role='option'], [role='menuitem'], div")]
+      .filter(isVisible)
+      .find(el => /^[\w.-]+\/[\w.-]+$/.test((el.textContent || "").trim()));
 
     if (!candidate) throw new Error("Claude asked for a repo, but no repo option was found.");
     candidate.click();

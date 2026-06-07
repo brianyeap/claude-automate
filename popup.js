@@ -3,7 +3,6 @@ const sessionUsage = document.querySelector("#sessionUsage");
 const resetTime = document.querySelector("#resetTime");
 const promptInput = document.querySelector("#promptInput");
 const manualTime = document.querySelector("#manualTime");
-const repoInput = document.querySelector("#repoInput");
 const useResetButton = document.querySelector("#useResetButton");
 const scheduleButton = document.querySelector("#scheduleButton");
 const scheduledText = document.querySelector("#scheduledText");
@@ -17,13 +16,11 @@ init();
 async function init() {
   const state = await sendRuntimeMessage({ type: "GET_STATE" });
   promptInput.value = state.prompt || "";
-  repoInput.value = state.repo || "";
   renderSchedule(state.schedule);
   await refreshUsage();
 }
 
 promptInput.addEventListener("input", saveDraft);
-repoInput.addEventListener("input", saveDraft);
 
 useResetButton.addEventListener("click", async () => {
   clearMessage();
@@ -53,8 +50,7 @@ cancelButton.addEventListener("click", async () => {
 async function saveDraft() {
   await sendRuntimeMessage({
     type: "SAVE_DRAFT",
-    prompt: promptInput.value,
-    repo: repoInput.value.trim()
+    prompt: promptInput.value
   });
 }
 
@@ -78,8 +74,7 @@ async function scheduleAt(runAt, source) {
     type: "SCHEDULE_PROMPT",
     runAt,
     source,
-    prompt: promptInput.value,
-    repo: repoInput.value.trim()
+    prompt: promptInput.value
   });
   renderSchedule(state.schedule);
   showMessage(`Scheduled for ${formatDate(runAt)}.`);

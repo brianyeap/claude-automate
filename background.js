@@ -10,13 +10,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== ALARM_NAME) return;
-  const { prompt = "", repo = "", schedule } = await chrome.storage.local.get(["prompt", "repo", "schedule"]);
+  const { prompt = "", schedule } = await chrome.storage.local.get(["prompt", "schedule"]);
   if (!prompt.trim()) return;
 
   try {
     const tab = await getOrOpenClaudeTab();
     await waitForTabReady(tab.id);
-    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, repo });
+    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt });
     await chrome.storage.local.remove("schedule");
     await chrome.notifications.create({
       type: "basic",
@@ -40,7 +40,7 @@ async function handleMessage(message) {
   }
 
   if (message.type === "SAVE_DRAFT") {
-    await chrome.storage.local.set({ prompt: message.prompt || "", repo: message.repo || "" });
+    await chrome.storage.local.set({ prompt: message.prompt || "" });
     return getState();
   }
 
@@ -54,7 +54,6 @@ async function handleMessage(message) {
     const schedule = { runAt, source: message.source || "manual time", createdAt: Date.now() };
     await chrome.storage.local.set({
       prompt: message.prompt || "",
-      repo: message.repo || "",
       schedule
     });
     await chrome.alarms.clear(ALARM_NAME);
@@ -72,8 +71,8 @@ async function handleMessage(message) {
 }
 
 async function getState() {
-  const { prompt = "", repo = "", schedule = null } = await chrome.storage.local.get(["prompt", "repo", "schedule"]);
-  return { prompt, repo, schedule };
+  const { prompt = "", schedule = null } = await chrome.storage.local.get(["prompt", "schedule"]);
+  return { prompt, schedule };
 }
 
 async function getUsage() {
