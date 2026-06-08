@@ -45,10 +45,10 @@ async function init() {
   await refreshUsage();
 }
 
-async function checkForUpdates() {
+async function checkForUpdates(force = false) {
   const local = chrome.runtime.getManifest().version;
   const { updateCache } = await chrome.storage.local.get("updateCache");
-  if (updateCache?.checkedAt && Date.now() - updateCache.checkedAt < UPDATE_CHECK_TTL) {
+  if (!force && updateCache?.checkedAt && Date.now() - updateCache.checkedAt < UPDATE_CHECK_TTL) {
     renderUpdateBanner(updateCache);
     return;
   }
@@ -142,7 +142,7 @@ window.addEventListener("pagehide", () => {
 
 refreshButton.addEventListener("click", async () => {
   clearMessage();
-  await refreshUsage(true);
+  await Promise.all([refreshUsage(true), checkForUpdates(true)]);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
