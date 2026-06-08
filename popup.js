@@ -1,3 +1,6 @@
+const GITHUB_REPO = "brianyeap/claude-automate";
+const UPDATE_CHECK_TTL = 60 * 60 * 1000;
+
 const usageSummary = document.querySelector("#usageSummary");
 const sessionUsage = document.querySelector("#sessionUsage");
 const resetTime = document.querySelector("#resetTime");
@@ -31,11 +34,68 @@ async function init() {
   const status = await refreshPageStatus();
   pageStatusTimer = setInterval(refreshPageStatus, 1000);
   await refreshProjects(state.project);
+  checkForUpdates();
   if (!status?.isClaudeCodePage) {
     usageSummary.textContent = "Open Claude Code to read usage";
     return;
   }
   await refreshUsage();
+}
+
+async function checkForUpdates() {
+  const local = chrome.runtime.getManifest().version;
+  const { updateCache } = await chrome.storage.local.get("updateCache");
+  if (updateCache?.checkedAt && Date.now() - updateCache.checkedAt < UPDATE_CHECK_TTL) {
+    renderUpdateBanner(updateCache);
+    return;
+  }
+
+  try {
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${GITHUB_REPO}/main/manifest.json`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return;
+    const { version: remote } = await res.json();
+    if (!isNewerVersion(remote, local)) {
+      await chrome.storage.local.set({ updateCache: { upToDate: true, checkedAt: Date.now() } });
+      return;
+    }
+
+    let commitsBehind = 0;
+    try {
+      const { installedAt } = await chrome.storage.local.get("installedAt");
+      const since = installedAt ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const apiRes = await fetch(
+        `https://api.github.com/repos/${GITHUB_REPO}/commits?sha=main&since=${since}&per_page=100`
+      );
+      if (apiRes.ok) {
+        const commits = await apiRes.json();
+        commitsBehind = Array.isArray(commits) ? commits.length : 0;
+      }
+    } catch {}
+
+    const cache = { upToDate: false, remote, local, commitsBehind, checkedAt: Date.now() };
+    await chrome.storage.local.set({ updateCache: cache });
+    renderUpdateBanner(cache);
+  } catch {}
+}
+
+function isNewerVersion(remote, local) {
+  const parse = v => v.split(".").map(Number);
+  const [rA, rB, rC] = parse(remote);
+  const [lA, lB, lC] = parse(local);
+  return rA !== lA ? rA > lA : rB !== lB ? rB > lB : rC > lC;
+}
+
+function renderUpdateBanner({ upToDate, remote, commitsBehind }) {
+  const banner = document.querySelector("#updateBanner");
+  if (!banner || upToDate) return;
+  const behind = commitsBehind > 0
+    ? ` · ${commitsBehind} commit${commitsBehind === 1 ? "" : "s"} behind`
+    : "";
+  banner.querySelector("#updateBannerText").textContent = `v${remote} available${behind}`;
+  banner.hidden = false;
 }
 
 async function refreshProjects(savedProject) {

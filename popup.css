@@ -265,6 +265,31 @@ button:disabled {
   opacity: 0.55;
 }
 
+.updateBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid #6d4c2a;
+  border-radius: 8px;
+  background: #2a1e14;
+  font-size: 12px;
+  color: var(--accent-2);
+}
+
+.updateBanner a {
+  flex: none;
+  color: var(--accent-2);
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.updateBanner a:hover {
+  color: var(--text);
+}
+
 .toast {
   position: fixed;
   left: 50%;

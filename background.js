@@ -1,6 +1,12 @@
 const CACHE_TTL_MS = 60_000;
 const ALARM_NAME = "claude-limit-runner";
 
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === "install" || reason === "update") {
+    chrome.storage.local.set({ installedAt: new Date().toISOString(), updateCache: null });
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender).then(sendResponse).catch(error => {
     sendResponse({ error: error.message || String(error) });
