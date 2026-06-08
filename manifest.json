@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Claude Limit Runner",
   "description": "Schedule a Claude Code prompt for your next usage reset or a custom time.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "permissions": ["alarms", "notifications", "storage", "tabs", "scripting"],
   "host_permissions": [
     "https://claude.ai/*",

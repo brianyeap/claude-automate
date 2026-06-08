@@ -54,8 +54,11 @@ async function checkForUpdates(force = false) {
   }
 
   try {
+    // raw.githubusercontent is fronted by a CDN with a 5-min edge cache that
+    // `cache: "no-store"` does NOT bypass (that only affects the browser cache).
+    // A unique query string keys a fresh edge fetch so pushes show up immediately.
     const res = await fetch(
-      `https://raw.githubusercontent.com/${GITHUB_REPO}/main/manifest.json`,
+      `https://raw.githubusercontent.com/${GITHUB_REPO}/main/manifest.json?t=${Date.now()}`,
       { cache: "no-store" }
     );
     if (!res.ok) return;
