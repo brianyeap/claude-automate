@@ -90,7 +90,7 @@ function isNewerVersion(remote, local) {
 
 function renderUpdateBanner({ upToDate, remote, commitsBehind }) {
   const banner = document.querySelector("#updateBanner");
-  if (!banner || upToDate) return;
+  if (!banner || upToDate || !remote) return;
   const behind = commitsBehind > 0
     ? ` · ${commitsBehind} commit${commitsBehind === 1 ? "" : "s"} behind`
     : "";

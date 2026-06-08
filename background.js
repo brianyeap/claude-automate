@@ -3,7 +3,8 @@ const ALARM_NAME = "claude-limit-runner";
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install" || reason === "update") {
-    chrome.storage.local.set({ installedAt: new Date().toISOString(), updateCache: null });
+    chrome.storage.local.set({ installedAt: new Date().toISOString() });
+    chrome.storage.local.remove("updateCache");
   }
 });
 
