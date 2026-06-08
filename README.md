@@ -7,9 +7,7 @@ A local Chrome extension that reads Claude Code usage from the authenticated Cla
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
-4. Select this folder:
-
-   `/Users/brianNew/Documents/Codex/2026-06-08/can-you-see-my-browser-taht/claude-limit-runner`
+4. Select this folder (wherever you cloned/downloaded it).
 
 ## Notes
 
