@@ -1,5 +1,7 @@
 const CACHE_TTL_MS = 60_000;
 const ALARM_NAME = "claude-limit-runner";
+const ACTIVE_REFRESH_ALARM_NAME = "claude-limit-runner-active-refresh";
+const ACTIVE_REFRESH_PERIOD_MINUTES = 3;
 const TARGET_URLS = {
   code: "https://claude.ai/code",
   design: "https://claude.ai/design"
@@ -10,6 +12,11 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     chrome.storage.local.set({ installedAt: new Date().toISOString() });
     chrome.storage.local.remove("updateCache");
   }
+  syncActiveRefreshAlarm();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  syncActiveRefreshAlarm();
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -20,6 +27,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.alarms.onAlarm.addListener(async alarm => {
+  if (alarm.name === ACTIVE_REFRESH_ALARM_NAME) {
+    await refreshActiveClaudeTab();
+    return;
+  }
+
   if (alarm.name !== ALARM_NAME) return;
   const { prompt = "", project = "", schedule, targetMode = "code" } = await chrome.storage.local.get(["prompt", "schedule", "project", "targetMode"]);
   if (!prompt.trim()) return;
@@ -32,6 +44,7 @@ chrome.alarms.onAlarm.addListener(async alarm => {
     await waitForTabReady(tab.id);
     await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, project, targetMode: scheduledMode, continueChat });
     await chrome.storage.local.remove("schedule");
+    await chrome.alarms.clear(ACTIVE_REFRESH_ALARM_NAME);
     await chrome.notifications.create({
       type: "basic",
       iconUrl: "icon.png",
@@ -96,11 +109,13 @@ async function handleMessage(message) {
     await chrome.storage.local.set(update);
     await chrome.alarms.clear(ALARM_NAME);
     await chrome.alarms.create(ALARM_NAME, { when: runAt });
+    await startActiveRefreshAlarm();
     return getState();
   }
 
   if (message.type === "CANCEL_SCHEDULE") {
     await chrome.alarms.clear(ALARM_NAME);
+    await chrome.alarms.clear(ACTIVE_REFRESH_ALARM_NAME);
     await chrome.storage.local.remove("schedule");
     return getState();
   }
@@ -142,6 +157,39 @@ async function getUsageTab() {
   if (onUsage?.id) return { tab: onUsage, reused: true };
   const tab = await chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: false });
   return { tab, reused: false };
+}
+
+async function syncActiveRefreshAlarm() {
+  const { schedule = null } = await chrome.storage.local.get("schedule");
+  if (schedule?.runAt && schedule.runAt > Date.now()) {
+    await startActiveRefreshAlarm();
+    return;
+  }
+  await chrome.alarms.clear(ACTIVE_REFRESH_ALARM_NAME);
+}
+
+async function startActiveRefreshAlarm() {
+  await chrome.alarms.create(ACTIVE_REFRESH_ALARM_NAME, {
+    delayInMinutes: ACTIVE_REFRESH_PERIOD_MINUTES,
+    periodInMinutes: ACTIVE_REFRESH_PERIOD_MINUTES
+  });
+}
+
+async function refreshActiveClaudeTab() {
+  const { schedule = null, targetMode = "code" } = await chrome.storage.local.get(["schedule", "targetMode"]);
+  if (!schedule?.runAt || schedule.runAt <= Date.now()) {
+    await chrome.alarms.clear(ACTIVE_REFRESH_ALARM_NAME);
+    return;
+  }
+
+  const mode = normalizeTargetMode(schedule.targetMode || targetMode);
+  const targetUrl = schedule.targetUrl || "";
+  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  const tab = targetUrl
+    ? tabs.find(candidate => candidate.url === targetUrl)
+    : tabs.find(candidate => candidate.url?.startsWith(TARGET_URLS[mode]));
+
+  if (tab?.id) await chrome.tabs.reload(tab.id);
 }
 
 async function getPageStatus() {
