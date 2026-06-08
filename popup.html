@@ -10,10 +10,11 @@
     <main class="shell">
       <header class="brand">
         <div class="mark">✶</div>
-        <div>
+        <div class="brandText">
           <h1>Claude Limit Runner</h1>
           <p id="usageSummary">Checking usage…</p>
         </div>
+        <button id="refreshButton" class="refresh" type="button" title="Refresh usage" aria-label="Refresh usage">⟳</button>
       </header>
 
       <section class="status" aria-live="polite">
@@ -37,11 +38,17 @@
       </section>
 
       <label class="field">
+        <span>Project</span>
+        <select id="projectSelect">
+          <option value="">Auto (current page)</option>
+        </select>
+        <small id="targetHint" class="targetHint"></small>
+      </label>
+
+      <label class="field">
         <span>Prompt to send</span>
         <textarea id="promptInput" rows="7" placeholder="Paste the prompt Claude should run after the reset…"></textarea>
       </label>
-
-      <button id="testPromptButton" class="secondary" type="button">Test prompt paste</button>
 
       <div class="grid">
         <label class="field">
@@ -61,8 +68,8 @@
         <button id="cancelButton" class="ghost" type="button">Cancel</button>
       </section>
 
-      <p id="message" class="message"></p>
     </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="popup.js" type="module"></script>
   </body>
 </html>

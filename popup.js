@@ -4,17 +4,23 @@ const resetTime = document.querySelector("#resetTime");
 const pageStatusDot = document.querySelector("#pageStatusDot");
 const pageStatusText = document.querySelector("#pageStatusText");
 const projectText = document.querySelector("#projectText");
+const projectSelect = document.querySelector("#projectSelect");
+const targetHint = document.querySelector("#targetHint");
 const promptInput = document.querySelector("#promptInput");
-const testPromptButton = document.querySelector("#testPromptButton");
 const manualTime = document.querySelector("#manualTime");
 const useResetButton = document.querySelector("#useResetButton");
 const scheduleButton = document.querySelector("#scheduleButton");
 const scheduledText = document.querySelector("#scheduledText");
 const cancelButton = document.querySelector("#cancelButton");
-const message = document.querySelector("#message");
+const refreshButton = document.querySelector("#refreshButton");
+const toast = document.querySelector("#toast");
 
 let latestUsage = null;
+let latestPageStatus = null;
 let pageStatusTimer = null;
+let scheduleTimer = null;
+let usageTimer = null;
+let currentSchedule = null;
 
 init();
 
@@ -24,6 +30,7 @@ async function init() {
   renderSchedule(state.schedule);
   const status = await refreshPageStatus();
   pageStatusTimer = setInterval(refreshPageStatus, 1000);
+  await refreshProjects(state.project);
   if (!status?.isClaudeCodePage) {
     usageSummary.textContent = "Open Claude Code to read usage";
     return;
@@ -31,27 +38,50 @@ async function init() {
   await refreshUsage();
 }
 
+async function refreshProjects(savedProject) {
+  let result = { projects: [], current: "" };
+  try {
+    result = await sendRuntimeMessage({ type: "GET_PROJECTS" });
+  } catch (error) {
+    // Keep the bare "Auto" option if the project list can't be read.
+  }
+
+  const autoLabel = result.current ? `Auto (current page: ${result.current})` : "Auto (current page)";
+  const options = [`<option value="">${escapeHtml(autoLabel)}</option>`];
+  for (const project of result.projects || []) {
+    const value = project.repo || project.name;
+    options.push(`<option value="${escapeHtml(value)}">${escapeHtml(project.name)}</option>`);
+  }
+  projectSelect.innerHTML = options.join("");
+
+  // Default to the saved project if it still exists, otherwise auto-detect.
+  const values = [...projectSelect.options].map(option => option.value);
+  projectSelect.value = savedProject && values.includes(savedProject) ? savedProject : "";
+}
+
 window.addEventListener("pagehide", () => {
   if (pageStatusTimer) clearInterval(pageStatusTimer);
+  stopScheduleTimer();
+  stopUsageTimer();
+});
+
+refreshButton.addEventListener("click", async () => {
+  clearMessage();
+  await refreshUsage(true);
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !("schedule" in changes)) return;
+  const schedule = changes.schedule.newValue || null;
+  renderSchedule(schedule);
+  if (!schedule) showMessage("Scheduled run fired.");
 });
 
 promptInput.addEventListener("input", saveDraft);
 
-testPromptButton.addEventListener("click", async () => {
-  clearMessage();
-  await saveDraft();
-  if (!promptInput.value.trim()) return showMessage("Paste a prompt first.", true);
-
-  try {
-    setTesting(true);
-    await sendRuntimeMessage({ type: "TEST_PROMPT", prompt: promptInput.value });
-    showMessage("Prompt pasted, verified, and cleared.");
-    await refreshPageStatus();
-  } catch (error) {
-    showMessage(error.message || "Could not test the prompt.", true);
-  } finally {
-    setTesting(false);
-  }
+projectSelect.addEventListener("change", () => {
+  renderTargetHint();
+  saveDraft();
 });
 
 useResetButton.addEventListener("click", async () => {
@@ -60,7 +90,8 @@ useResetButton.addEventListener("click", async () => {
   if (!promptInput.value.trim()) return showMessage("Paste a prompt first.", true);
   const usage = latestUsage || await refreshUsage();
   if (!usage?.resetAt) return showMessage("Claude did not expose a session reset time yet.", true);
-  await scheduleAt(usage.resetAt, "next limit reset");
+  // Fire 1 minute after the reset so the new session window is definitely open.
+  await scheduleAt(usage.resetAt + 60_000, "next limit reset +1 min");
 });
 
 scheduleButton.addEventListener("click", async () => {
@@ -82,14 +113,15 @@ cancelButton.addEventListener("click", async () => {
 async function saveDraft() {
   await sendRuntimeMessage({
     type: "SAVE_DRAFT",
-    prompt: promptInput.value
+    prompt: promptInput.value,
+    project: projectSelect.value
   });
 }
 
-async function refreshUsage() {
+async function refreshUsage(force = false) {
   try {
     setLoading(true);
-    latestUsage = await sendRuntimeMessage({ type: "GET_USAGE" });
+    latestUsage = await sendRuntimeMessage({ type: "GET_USAGE", force });
     renderUsage(latestUsage);
     return latestUsage;
   } catch (error) {
@@ -118,7 +150,8 @@ async function scheduleAt(runAt, source) {
     type: "SCHEDULE_PROMPT",
     runAt,
     source,
-    prompt: promptInput.value
+    prompt: promptInput.value,
+    project: projectSelect.value
   });
   renderSchedule(state.schedule);
   showMessage(`Scheduled for ${formatDate(runAt)}.`);
@@ -127,10 +160,29 @@ async function scheduleAt(runAt, source) {
 function renderUsage(usage) {
   if (!usage) return;
   sessionUsage.textContent = usage.sessionUsage || "-";
-  resetTime.textContent = usage.resetAt ? `${formatDate(usage.resetAt)} (${timeUntil(usage.resetAt)})` : usage.resetText || "-";
+  renderUsageLive();
+  startUsageTimer();
+}
+
+function renderUsageLive() {
+  const usage = latestUsage;
+  if (!usage) return;
+  resetTime.textContent = usage.resetAt
+    ? `${formatDate(usage.resetAt)} (${timeUntil(usage.resetAt)})`
+    : usage.resetText || "-";
   usageSummary.textContent = usage.lastPulledAt
     ? `Usage checked ${relativeTime(usage.lastPulledAt)}`
     : "Usage checked";
+}
+
+function startUsageTimer() {
+  if (usageTimer) return;
+  usageTimer = setInterval(renderUsageLive, 1000);
+}
+
+function stopUsageTimer() {
+  if (usageTimer) clearInterval(usageTimer);
+  usageTimer = null;
 }
 
 function renderPageStatus(status) {
@@ -156,16 +208,48 @@ function renderPageStatus(status) {
   } else {
     projectText.textContent = "Open Claude Code to show project";
   }
+
+  latestPageStatus = status;
+  renderTargetHint();
+}
+
+// Show whether an Auto run will continue this exact chat or open a new session.
+function renderTargetHint() {
+  if (!targetHint) return;
+  const isAuto = !projectSelect.value;
+  if (isAuto && latestPageStatus?.isConversation) {
+    targetHint.textContent = "↳ Will continue this chat";
+  } else if (isAuto) {
+    targetHint.textContent = "↳ Will start a new session on the current page";
+  } else {
+    targetHint.textContent = "↳ Will start a new session in the selected project";
+  }
 }
 
 function renderSchedule(schedule) {
-  if (!schedule?.runAt) {
+  currentSchedule = schedule?.runAt ? schedule : null;
+  if (!currentSchedule) {
     scheduledText.textContent = "Nothing scheduled";
     cancelButton.disabled = true;
+    stopScheduleTimer();
     return;
   }
-  scheduledText.textContent = `${formatDate(schedule.runAt)} (${minutesUntil(schedule.runAt)})`;
+  scheduledText.textContent = `${formatDate(currentSchedule.runAt)} (${timeUntil(currentSchedule.runAt)})`;
   cancelButton.disabled = false;
+  startScheduleTimer();
+}
+
+function startScheduleTimer() {
+  if (scheduleTimer) return;
+  scheduleTimer = setInterval(() => {
+    if (!currentSchedule) return stopScheduleTimer();
+    scheduledText.textContent = `${formatDate(currentSchedule.runAt)} (${timeUntil(currentSchedule.runAt)})`;
+  }, 1000);
+}
+
+function stopScheduleTimer() {
+  if (scheduleTimer) clearInterval(scheduleTimer);
+  scheduleTimer = null;
 }
 
 async function sendRuntimeMessage(payload) {
@@ -177,58 +261,61 @@ async function sendRuntimeMessage(payload) {
 function setLoading(loading) {
   useResetButton.disabled = loading;
   scheduleButton.disabled = loading;
-  testPromptButton.disabled = loading;
+  refreshButton.disabled = loading;
+  refreshButton.classList.toggle("spinning", loading);
   if (loading) usageSummary.textContent = "Checking Claude usage…";
 }
 
-function setTesting(testing) {
-  testPromptButton.disabled = testing;
-  useResetButton.disabled = testing;
-  scheduleButton.disabled = testing;
-  if (testing) showMessage("Testing prompt paste…");
-}
+let toastTimer = null;
 
 function showMessage(text, isError = false) {
-  message.textContent = text;
-  message.classList.toggle("error", isError);
+  if (!text) return clearMessage();
+  if (toastTimer) clearTimeout(toastTimer);
+  toast.textContent = text;
+  toast.classList.toggle("error", isError);
+  toast.classList.add("show");
+  toastTimer = setTimeout(clearMessage, 3200);
 }
 
 function clearMessage() {
-  showMessage("");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+  toast.classList.remove("show");
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[char]));
 }
 
 function formatDate(value) {
   return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
     hour: "numeric",
-    minute: "2-digit"
+    minute: "2-digit",
+    hour12: true
   }).format(new Date(value));
-}
-
-function minutesUntil(value) {
-  const minutes = Math.max(0, Math.round((value - Date.now()) / 60000));
-  if (minutes < 1) return "under 1 min";
-  if (minutes === 1) return "1 min";
-  return `${minutes} min`;
 }
 
 function timeUntil(value) {
   const totalMinutes = Math.max(0, Math.round((value - Date.now()) / 60000));
-  if (totalMinutes < 1) return "under 1 min";
+  if (totalMinutes < 1) return "under 1M";
 
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (!hours) return minutes === 1 ? "1 min" : `${minutes} min`;
-  if (!minutes) return hours === 1 ? "1 hr" : `${hours} hr`;
-
-  const hourText = hours === 1 ? "1 hr" : `${hours} hr`;
-  const minuteText = minutes === 1 ? "1 min" : `${minutes} min`;
-  return `${hourText} ${minuteText}`;
+  if (!hours) return `${minutes}M`;
+  if (!minutes) return `${hours}H`;
+  return `${hours}H ${minutes}M`;
 }
 
 function relativeTime(value) {
   const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  return `${minutes} min ago`;
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes === 1 ? "1 min ago" : `${minutes} min ago`;
 }

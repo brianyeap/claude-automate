@@ -10,13 +10,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== ALARM_NAME) return;
-  const { prompt = "", schedule } = await chrome.storage.local.get(["prompt", "schedule"]);
+  const { prompt = "", project = "", schedule } = await chrome.storage.local.get(["prompt", "schedule", "project"]);
   if (!prompt.trim()) return;
 
   try {
-    const tab = await getOrOpenClaudeTab();
+    const targetUrl = schedule?.targetUrl || "";
+    const continueChat = Boolean(targetUrl);
+    const tab = await getOrOpenClaudeTab(targetUrl);
     await waitForTabReady(tab.id);
-    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt });
+    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, project, continueChat });
     await chrome.storage.local.remove("schedule");
     await chrome.notifications.create({
       type: "basic",
@@ -40,30 +42,39 @@ async function handleMessage(message) {
   }
 
   if (message.type === "SAVE_DRAFT") {
-    await chrome.storage.local.set({ prompt: message.prompt || "" });
+    const update = { prompt: message.prompt || "" };
+    if (typeof message.project === "string") update.project = message.project;
+    await chrome.storage.local.set(update);
     return getState();
   }
 
   if (message.type === "GET_USAGE") {
-    return getUsage();
+    return getUsage(Boolean(message.force));
   }
 
   if (message.type === "GET_PAGE_STATUS") {
     return getPageStatus();
   }
 
-  if (message.type === "TEST_PROMPT") {
-    return testPrompt(message.prompt);
+  if (message.type === "GET_PROJECTS") {
+    return getProjects();
   }
 
   if (message.type === "SCHEDULE_PROMPT") {
     const runAt = Number(message.runAt);
     if (!Number.isFinite(runAt) || runAt <= Date.now()) throw new Error("Schedule time must be in the future.");
-    const schedule = { runAt, source: message.source || "manual time", createdAt: Date.now() };
-    await chrome.storage.local.set({
-      prompt: message.prompt || "",
-      schedule
-    });
+    // "Auto" (no explicit project) means "continue whatever chat I'm in" — pin the
+    // exact conversation URL so the run returns to this thread instead of the launcher.
+    let targetUrl = "";
+    if (!message.project) {
+      const tab = await findActiveTab();
+      const url = tab?.url || "";
+      if (url.startsWith("https://claude.ai/code") && isConversationUrl(url)) targetUrl = url;
+    }
+    const schedule = { runAt, source: message.source || "manual time", createdAt: Date.now(), targetUrl };
+    const update = { prompt: message.prompt || "", schedule };
+    if (typeof message.project === "string") update.project = message.project;
+    await chrome.storage.local.set(update);
     await chrome.alarms.clear(ALARM_NAME);
     await chrome.alarms.create(ALARM_NAME, { when: runAt });
     return getState();
@@ -79,22 +90,32 @@ async function handleMessage(message) {
 }
 
 async function getState() {
-  const { prompt = "", schedule = null } = await chrome.storage.local.get(["prompt", "schedule"]);
-  return { prompt, schedule };
+  const { prompt = "", project = "", schedule = null } = await chrome.storage.local.get(["prompt", "schedule", "project"]);
+  return { prompt, project, schedule };
 }
 
-async function getUsage() {
+async function getUsage(force = false) {
   const { usageCache } = await chrome.storage.local.get("usageCache");
-  if (usageCache?.lastPulledAt && Date.now() - usageCache.lastPulledAt < CACHE_TTL_MS) {
+  if (!force && usageCache?.lastPulledAt && Date.now() - usageCache.lastPulledAt < CACHE_TTL_MS) {
     return usageCache;
   }
 
-  const tab = await getOrOpenClaudeTab();
+  const tab = await getUsageTab();
   await waitForTabReady(tab.id);
   const usage = await sendToContent(tab.id, { type: "GET_USAGE" });
   const cache = { ...usage, lastPulledAt: Date.now() };
   await chrome.storage.local.set({ usageCache: cache });
   return cache;
+}
+
+// Read usage without hijacking the user's current chat. Reuse a tab that's already
+// on the usage page if one exists; otherwise open the usage page in a background tab
+// so the active conversation tab is left untouched.
+async function getUsageTab() {
+  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  const onUsage = tabs.find(tab => tab.url?.includes("#settings/usage"));
+  if (onUsage?.id) return onUsage;
+  return chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: false });
 }
 
 async function getPageStatus() {
@@ -120,11 +141,17 @@ async function getPageStatus() {
   }
 }
 
-async function testPrompt(prompt) {
-  if (!prompt?.trim()) throw new Error("No prompt was provided.");
-  const tab = await getOrOpenClaudeTab();
-  await waitForTabReady(tab.id);
-  return sendToContent(tab.id, { type: "TEST_PROMPT", prompt });
+async function getProjects() {
+  const tab = await findActiveTab();
+  if (!tab?.id || !tab.url?.startsWith("https://claude.ai/code")) {
+    return { projects: [], current: "", checkedAt: Date.now() };
+  }
+
+  try {
+    return await sendToContent(tab.id, { type: "GET_PROJECTS" });
+  } catch (error) {
+    return { projects: [], current: "", checkedAt: Date.now() };
+  }
 }
 
 async function findActiveTab() {
@@ -136,14 +163,40 @@ async function findActiveTab() {
   return focusedWindow?.tabs?.find(tab => tab.active) || null;
 }
 
-async function getOrOpenClaudeTab() {
+async function getOrOpenClaudeTab(targetUrl = "") {
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+
+  // Continue a specific chat: reuse the exact tab if it's still on that URL,
+  // otherwise navigate a Claude tab (or a new one) back to that conversation.
+  if (targetUrl) {
+    const onUrl = tabs.find(tab => tab.url === targetUrl);
+    if (onUrl?.id) {
+      await chrome.tabs.update(onUrl.id, { active: true });
+      return onUrl;
+    }
+    const reusable = tabs.find(tab => tab.url?.startsWith("https://claude.ai/code"));
+    if (reusable?.id) {
+      await chrome.tabs.update(reusable.id, { url: targetUrl, active: true });
+      return chrome.tabs.get(reusable.id);
+    }
+    return chrome.tabs.create({ url: targetUrl, active: true });
+  }
+
   const existing = tabs.find(tab => tab.url?.startsWith("https://claude.ai/code"));
   if (existing?.id) {
     await chrome.tabs.update(existing.id, { active: true });
     return existing;
   }
   return chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: true });
+}
+
+function isConversationUrl(url) {
+  try {
+    const path = new URL(url).pathname.replace(/^\/code\/?/, "");
+    return path.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForTabReady(tabId) {

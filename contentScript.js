@@ -12,8 +12,8 @@
   async function handleMessage(message) {
     if (message.type === "GET_PAGE_STATUS") return readPageStatus();
     if (message.type === "GET_USAGE") return readUsage();
-    if (message.type === "TEST_PROMPT") return testPrompt(message.prompt);
-    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt);
+    if (message.type === "GET_PROJECTS") return readProjects();
+    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt, message.project, { continueChat: message.continueChat });
     throw new Error(`Unknown content message: ${message.type}`);
   }
 
@@ -21,9 +21,21 @@
     return {
       isClaudeCodePage: location.href.startsWith("https://claude.ai/code"),
       hasPromptEditor: Boolean(findPromptEditor()),
+      isConversation: isConversationUrl(location.href),
+      url: location.href,
       projectName: findProjectName(),
       checkedAt: Date.now()
     };
+  }
+
+  // A new-session launcher is bare "/code"; an open chat has a session id in the path.
+  function isConversationUrl(url) {
+    try {
+      const path = new URL(url).pathname.replace(/^\/code\/?/, "");
+      return path.length > 0;
+    } catch {
+      return false;
+    }
   }
 
   function findProjectName() {
@@ -59,6 +71,69 @@
     return isUsefulProjectText(compactTitle) ? compactTitle : "";
   }
 
+  async function readProjects() {
+    const current = findProjectName();
+    const trigger = findRepoTrigger();
+    if (!trigger) {
+      const repos = current ? [{ name: current, repo: "" }] : [];
+      return { projects: repos, current, checkedAt: Date.now() };
+    }
+
+    trigger.click();
+    await sleep(700);
+    const repos = readRepoOptions();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(200);
+
+    const seen = new Set();
+    const projects = [];
+    for (const repo of repos) {
+      const name = repo.split("/").pop();
+      if (seen.has(repo)) continue;
+      seen.add(repo);
+      projects.push({ name, repo });
+    }
+    if (current && !projects.some(project => project.name === current)) {
+      projects.unshift({ name: current, repo: "" });
+    }
+    return { projects, current, checkedAt: Date.now() };
+  }
+
+  function findRepoTrigger() {
+    const buttons = [...document.querySelectorAll("button, [role='button']")].filter(isVisible);
+
+    // Fresh launcher: explicit "Select repo" label.
+    const selectRepo = buttons.find(button => /Select repo/i.test(button.textContent || ""));
+    if (selectRepo) return selectRepo;
+
+    // Older UI: the trigger shows the full "owner/repo".
+    const ownerRepo = buttons.find(button => /^[\w.-]+\/[\w.-]+$/.test(compactText(button.textContent)));
+    if (ownerRepo) return ownerRepo;
+
+    // Newer UI: the trigger is a short repo-name chip (e.g. "transcendence") that
+    // opens a dialog. The branch picker next to it is also a dialog trigger, so
+    // skip ignored tokens ("main", etc.) and prefer the chip matching the
+    // detected project; otherwise fall back to the first such chip (repo comes
+    // before branch in the toolbar).
+    const dialogChips = buttons.filter(button =>
+      button.getAttribute("aria-haspopup") === "dialog"
+      && /^[\w.-]+$/.test(compactText(button.textContent))
+      && !isIgnoredProjectText(compactText(button.textContent)));
+    const current = findProjectName();
+    return dialogChips.find(button => compactText(button.textContent) === current) || dialogChips[0];
+  }
+
+  function readRepoOptions() {
+    const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
+    const popup = search?.closest("[role='dialog'], [role='listbox'], .epitaxy-popup") || document;
+    return [...new Set(
+      [...popup.querySelectorAll("button, [role='option'], [role='menuitem'], div")]
+        .filter(isVisible)
+        .map(el => compactText(el.textContent))
+        .filter(text => /^[\w.-]+\/[\w.-]+$/.test(text))
+    )];
+  }
+
   async function readUsage() {
     if (!location.href.includes("#settings/usage")) {
       location.href = "https://claude.ai/code#settings/usage";
@@ -84,15 +159,19 @@
     };
   }
 
-  async function runPrompt(prompt) {
+  async function runPrompt(prompt, project, options = {}) {
+    const continueChat = Boolean(options.continueChat);
     if (!prompt?.trim()) throw new Error("No prompt was provided.");
-    if (!location.href.startsWith("https://claude.ai/code")) {
+    // Only bounce to the launcher when starting fresh. When continuing a chat we
+    // stay on whatever conversation URL we were sent to.
+    if (!continueChat && !location.href.startsWith("https://claude.ai/code")) {
       location.href = "https://claude.ai/code";
       await sleep(1800);
     }
 
     await waitForSelector('div[aria-label="Prompt"][contenteditable="true"]', 15_000);
-    await ensureRepoSelected();
+    // Continuing an existing chat: just drop into this thread's composer, no repo picking.
+    if (!continueChat) await ensureRepoSelected(project);
 
     const editor = findPromptEditor();
     if (!editor) throw new Error("Could not find Claude prompt box.");
@@ -106,37 +185,10 @@
     return { ok: true, sentAt: Date.now() };
   }
 
-  async function testPrompt(prompt) {
-    if (!prompt?.trim()) throw new Error("No prompt was provided.");
-    if (!location.href.startsWith("https://claude.ai/code")) {
-      location.href = "https://claude.ai/code";
-      await sleep(1800);
-    }
+  async function ensureRepoSelected(project) {
+    const target = compactText(typeof project === "string" ? project : project?.name || project?.repo || "");
+    if (target) return selectRepo(target);
 
-    await waitForSelector('div[aria-label="Prompt"][contenteditable="true"]', 15_000);
-    await ensureRepoSelected();
-
-    const editor = findPromptEditor();
-    if (!editor) throw new Error("Could not find Claude prompt box.");
-
-    const expected = prompt.trim();
-    const normalizedExpected = compactText(expected);
-    await setEditorText(editor, expected);
-    await sleep(300);
-    if (!getEditorText(editor).includes(normalizedExpected.slice(0, 40))) {
-      throw new Error("Prompt paste could not be verified.");
-    }
-
-    await clearEditorText(editor);
-    await sleep(200);
-    if (getEditorText(editor)) {
-      throw new Error("Prompt pasted, but the prompt box could not be cleared.");
-    }
-
-    return { ok: true, testedAt: Date.now() };
-  }
-
-  async function ensureRepoSelected() {
     const selectRepoButton = [...document.querySelectorAll("button")]
       .find(button => isVisible(button) && /Select repo/i.test(button.textContent || ""));
 
@@ -145,15 +197,60 @@
     selectRepoButton.click();
     await sleep(700);
 
-    const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
-    const popup = search?.closest("[role='dialog'], [role='listbox']") || search?.parentElement?.parentElement?.parentElement;
-    const candidate = [...(popup || document).querySelectorAll("button, [role='option'], [role='menuitem'], div")]
-      .filter(isVisible)
-      .find(el => /^[\w.-]+\/[\w.-]+$/.test((el.textContent || "").trim()));
-
+    const candidate = findRepoOption();
     if (!candidate) throw new Error("Claude asked for a repo, but no repo option was found.");
     candidate.click();
     await sleep(1000);
+  }
+
+  async function selectRepo(target) {
+    const shortName = target.split("/").pop();
+
+    // If the page already shows the wanted repo, there is nothing to switch.
+    const trigger = findRepoTrigger();
+    if (trigger && !/Select repo/i.test(trigger.textContent || "")) {
+      const triggerText = compactText(trigger.textContent);
+      if (triggerText === target || triggerText.split("/").pop() === shortName) return;
+    }
+    if (!trigger) throw new Error("Could not find the repo selector on the page.");
+
+    trigger.click();
+    await sleep(700);
+
+    const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
+    if (search) {
+      setInputValue(search, shortName);
+      await sleep(500);
+    }
+
+    const option = findRepoOption(target);
+    if (!option) throw new Error(`Could not find the "${shortName}" repo in Claude's repo list.`);
+    option.click();
+    await sleep(1000);
+  }
+
+  function findRepoOption(target) {
+    const search = document.querySelector('input[placeholder="Search repos…"], input[aria-label="Search repos…"]');
+    const popup = search?.closest("[role='dialog'], [role='listbox'], .epitaxy-popup")
+      || search?.parentElement?.parentElement?.parentElement
+      || document;
+    const options = [...popup.querySelectorAll("button, [role='option'], [role='menuitem'], div")]
+      .filter(isVisible)
+      .filter(el => /^[\w.-]+\/[\w.-]+$/.test(compactText(el.textContent)));
+
+    if (!target) return options[0];
+
+    const wanted = target.toLowerCase();
+    const shortName = wanted.split("/").pop();
+    return options.find(el => compactText(el.textContent).toLowerCase() === wanted)
+      || options.find(el => compactText(el.textContent).toLowerCase().split("/").pop() === shortName);
+  }
+
+  function setInputValue(input, value) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   async function setEditorText(editor, text) {
@@ -181,21 +278,6 @@
     }
   }
 
-  async function clearEditorText(editor) {
-    editor.focus();
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.execCommand("delete");
-    editor.textContent = "";
-    editor.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      inputType: "deleteContentBackward"
-    }));
-  }
-
   function findPromptEditor() {
     return [...document.querySelectorAll('div[aria-label="Prompt"][contenteditable="true"]')]
       .filter(isVisible)
@@ -212,10 +294,6 @@
         return { button, score: yDistance + Math.max(0, er.left - r.right) };
       })
       .sort((a, b) => a.score - b.score)[0]?.button;
-  }
-
-  function getEditorText(editor) {
-    return compactText(editor.innerText || editor.textContent);
   }
 
   function parseResetText(text) {

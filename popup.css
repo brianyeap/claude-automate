@@ -38,6 +38,31 @@ body {
   gap: 12px;
 }
 
+.brandText {
+  flex: 1;
+  min-width: 0;
+}
+
+.refresh {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.refresh.spinning {
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .mark {
   display: grid;
   place-items: center;
@@ -85,6 +110,13 @@ p {
 
 .projectText {
   margin-top: 5px;
+}
+
+.targetHint {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .statusDot {
@@ -143,7 +175,8 @@ strong {
 }
 
 textarea,
-input {
+input,
+select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -152,6 +185,12 @@ input {
   color: var(--text);
   font: inherit;
   font-size: 13px;
+}
+
+select {
+  height: 38px;
+  padding: 0 10px;
+  cursor: pointer;
 }
 
 textarea {
@@ -167,7 +206,8 @@ input {
 }
 
 textarea:focus,
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(217, 119, 69, 0.18);
 }
@@ -225,12 +265,34 @@ button:disabled {
   opacity: 0.55;
 }
 
-.message {
-  min-height: 18px;
-  margin: 0;
-  color: var(--muted);
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 10;
+  max-width: calc(100% - 36px);
+  padding: 11px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  transform: translate(-50%, 16px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.message.error {
-  color: var(--danger);
+.toast.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
+.toast.error {
+  border-color: var(--danger);
+  background: #3a2426;
+  color: #ffd9dc;
 }
