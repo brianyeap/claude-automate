@@ -276,6 +276,13 @@ button:disabled {
   background: #2a1e14;
   font-size: 12px;
   color: var(--accent-2);
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.updateBanner.upToDate {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--soft);
 }
 
 .updateBanner a {

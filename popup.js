@@ -25,6 +25,9 @@ let scheduleTimer = null;
 let usageTimer = null;
 let currentSchedule = null;
 
+// Show local version immediately while update check is in-flight.
+document.querySelector("#updateBannerText").textContent = `v${chrome.runtime.getManifest().version}`;
+
 init();
 
 async function init() {
@@ -90,12 +93,24 @@ function isNewerVersion(remote, local) {
 
 function renderUpdateBanner({ upToDate, remote, commitsBehind }) {
   const banner = document.querySelector("#updateBanner");
-  if (!banner || upToDate || !remote) return;
+  const text = document.querySelector("#updateBannerText");
+  const link = document.querySelector("#updateBannerLink");
+  if (!banner || !text || !link) return;
+  const local = chrome.runtime.getManifest().version;
+
+  if (upToDate || !remote) {
+    text.textContent = `v${local} · latest`;
+    banner.classList.add("upToDate");
+    link.hidden = true;
+    return;
+  }
+
   const behind = commitsBehind > 0
     ? ` · ${commitsBehind} commit${commitsBehind === 1 ? "" : "s"} behind`
     : "";
-  banner.querySelector("#updateBannerText").textContent = `v${remote} available${behind}`;
-  banner.hidden = false;
+  text.textContent = `v${local} → v${remote}${behind}`;
+  banner.classList.remove("upToDate");
+  link.hidden = false;
 }
 
 async function refreshProjects(savedProject) {
