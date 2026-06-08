@@ -10,20 +10,23 @@
   });
 
   async function handleMessage(message) {
-    if (message.type === "GET_PAGE_STATUS") return readPageStatus();
+    if (message.type === "GET_PAGE_STATUS") return readPageStatus(message.targetMode);
     if (message.type === "GET_USAGE") return readUsage();
     if (message.type === "GET_PROJECTS") return readProjects();
-    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt, message.project, { continueChat: message.continueChat });
+    if (message.type === "RUN_PROMPT") return runPrompt(message.prompt, message.project, { targetMode: message.targetMode, continueChat: message.continueChat });
     throw new Error(`Unknown content message: ${message.type}`);
   }
 
-  function readPageStatus() {
+  function readPageStatus(targetMode = "code") {
+    const mode = normalizeTargetMode(targetMode);
     return {
       isClaudeCodePage: location.href.startsWith("https://claude.ai/code"),
-      hasPromptEditor: Boolean(findPromptEditor()),
+      isClaudeDesignPage: location.href.startsWith("https://claude.ai/design"),
+      isTargetPage: isTargetPage(mode),
+      hasPromptEditor: Boolean(findPromptEditor(mode)),
       isConversation: isConversationUrl(location.href),
       url: location.href,
-      projectName: findProjectName(),
+      projectName: mode === "code" ? findProjectName() : "",
       checkedAt: Date.now()
     };
   }
@@ -31,7 +34,7 @@
   // A new-session launcher is bare "/code"; an open chat has a session id in the path.
   function isConversationUrl(url) {
     try {
-      const path = new URL(url).pathname.replace(/^\/code\/?/, "");
+      const path = new URL(url).pathname.replace(/^\/(code|design)\/?/, "");
       return path.length > 0;
     } catch {
       return false;
@@ -160,28 +163,33 @@
   }
 
   async function runPrompt(prompt, project, options = {}) {
+    const mode = normalizeTargetMode(options.targetMode);
     const continueChat = Boolean(options.continueChat);
     if (!prompt?.trim()) throw new Error("No prompt was provided.");
     // Only bounce to the launcher when starting fresh. When continuing a chat we
     // stay on whatever conversation URL we were sent to.
-    if (!continueChat && !location.href.startsWith("https://claude.ai/code")) {
-      location.href = "https://claude.ai/code";
+    if (!continueChat && !isTargetPage(mode)) {
+      location.href = mode === "design" ? "https://claude.ai/design" : "https://claude.ai/code";
       await sleep(1800);
     }
 
-    await waitForSelector('div[aria-label="Prompt"][contenteditable="true"]', 15_000);
+    await waitForPromptEditor(mode, 15_000);
     // Continuing an existing chat: just drop into this thread's composer, no repo picking.
-    if (!continueChat) await ensureRepoSelected(project);
+    if (mode === "code" && !continueChat) await ensureRepoSelected(project);
 
-    const editor = findPromptEditor();
+    const editor = findPromptEditor(mode);
     if (!editor) throw new Error("Could not find Claude prompt box.");
 
-    await setEditorText(editor, prompt.trim());
+    await setPromptEditorText(editor, prompt.trim());
     await sleep(500);
 
-    const send = findEnabledSendButton(editor);
-    if (!send) throw new Error("Could not find enabled Send button.");
-    send.click();
+    if (mode === "design") {
+      await submitDesignPrompt(editor);
+    } else {
+      const send = findEnabledSendButton(editor);
+      if (!send) throw new Error("Could not find enabled Send button.");
+      send.click();
+    }
     return { ok: true, sentAt: Date.now() };
   }
 
@@ -253,6 +261,15 @@
     input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  async function setPromptEditorText(editor, text) {
+    if (editor instanceof HTMLTextAreaElement) {
+      setTextareaValue(editor, text);
+      return;
+    }
+
+    await setEditorText(editor, text);
+  }
+
   async function setEditorText(editor, text) {
     editor.focus();
     const selection = window.getSelection();
@@ -278,10 +295,64 @@
     }
   }
 
-  function findPromptEditor() {
+  function setTextareaValue(textarea, value) {
+    textarea.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+    if (setter) setter.call(textarea, value);
+    else textarea.value = value;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function pressEnter(el) {
+    el.focus();
+    for (const type of ["keydown", "keypress", "keyup"]) {
+      el.dispatchEvent(new KeyboardEvent(type, {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      }));
+      await sleep(50);
+    }
+  }
+
+  async function submitDesignPrompt(editor) {
+    await pressEnter(editor);
+    await sleep(500);
+    if (!editor.value.trim()) return;
+
+    const send = findEnabledSendButton(editor);
+    if (send) {
+      send.click();
+      return;
+    }
+
+    throw new Error("Could not submit Claude Design prompt with Enter or a Send button.");
+  }
+
+  function findPromptEditor(targetMode = "code") {
+    if (normalizeTargetMode(targetMode) === "design") {
+      return [...document.querySelectorAll('textarea[data-testid="chat-composer-input"], textarea[placeholder="Describe what you want to create..."]')]
+        .filter(isVisible)
+        .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
+    }
+
     return [...document.querySelectorAll('div[aria-label="Prompt"][contenteditable="true"]')]
       .filter(isVisible)
       .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
+  }
+
+  async function waitForPromptEditor(targetMode, timeoutMs) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const el = findPromptEditor(targetMode);
+      if (el) return el;
+      await sleep(150);
+    }
+    throw new Error("Timed out waiting for Claude prompt box.");
   }
 
   function findEnabledSendButton(editor) {
@@ -356,6 +427,16 @@
 
   function isIgnoredProjectText(text) {
     return /^(Claude|Claude Code|Research preview|New session|Sessions|Welcome|Needs input|Default|main|\+)$|Usage limit reached|Feature of the week|Describe a task|Accept edits|Sonnet|Low/i.test(text);
+  }
+
+  function isTargetPage(targetMode) {
+    return normalizeTargetMode(targetMode) === "design"
+      ? location.href.startsWith("https://claude.ai/design")
+      : location.href.startsWith("https://claude.ai/code");
+  }
+
+  function normalizeTargetMode(targetMode) {
+    return targetMode === "design" ? "design" : "code";
   }
 
   function sleep(ms) {

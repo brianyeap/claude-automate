@@ -1,6 +1,6 @@
 # Claude Limit Runner
 
-A local Chrome extension that reads Claude Code usage from the authenticated Claude page, schedules a prompt for either a manual time or the next session reset, then sends the prompt into Claude Code.
+A local Chrome extension that reads Claude Code usage from the authenticated Claude page, schedules a prompt for either a manual time or the next session reset, then sends the prompt into Claude Code or Claude Design.
 
 ## Install
 
@@ -14,4 +14,5 @@ A local Chrome extension that reads Claude Code usage from the authenticated Cla
 - The extension does not read cookies or session tokens.
 - It pulls usage from `https://claude.ai/code#settings/usage` and caches the result for one minute.
 - If Claude asks for a repo before sending, the extension picks the first visible repo option.
+- Claude Design runs target `https://claude.ai/design` and does not use a repo/project selector.
 - Keep Chrome running for the scheduled alarm to fire.

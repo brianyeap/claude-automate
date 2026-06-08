@@ -8,6 +8,7 @@ const pageStatusDot = document.querySelector("#pageStatusDot");
 const pageStatusText = document.querySelector("#pageStatusText");
 const projectText = document.querySelector("#projectText");
 const projectSelect = document.querySelector("#projectSelect");
+const projectField = projectSelect.closest(".field");
 const targetHint = document.querySelector("#targetHint");
 const promptInput = document.querySelector("#promptInput");
 const manualTime = document.querySelector("#manualTime");
@@ -24,6 +25,7 @@ let pageStatusTimer = null;
 let scheduleTimer = null;
 let usageTimer = null;
 let currentSchedule = null;
+let targetMode = "code";
 
 // Show local version immediately while update check is in-flight.
 document.querySelector("#updateBannerText").textContent = `v${chrome.runtime.getManifest().version}`;
@@ -32,14 +34,17 @@ init();
 
 async function init() {
   const state = await sendRuntimeMessage({ type: "GET_STATE" });
+  targetMode = state.targetMode || "code";
+  document.querySelector(`input[name="targetMode"][value="${targetMode}"]`).checked = true;
   promptInput.value = state.prompt || "";
+  renderModeControls();
   renderSchedule(state.schedule);
   const status = await refreshPageStatus();
   pageStatusTimer = setInterval(refreshPageStatus, 1000);
-  await refreshProjects(state.project);
+  if (targetMode === "code") await refreshProjects(state.project);
   checkForUpdates();
-  if (!status?.isClaudeCodePage) {
-    usageSummary.textContent = "Open Claude Code to read usage";
+  if (!status?.isTargetPage) {
+    usageSummary.textContent = `Open ${targetLabel()} to read usage`;
     return;
   }
   await refreshUsage();
@@ -162,6 +167,17 @@ projectSelect.addEventListener("change", () => {
   saveDraft();
 });
 
+document.querySelectorAll('input[name="targetMode"]').forEach(input => {
+  input.addEventListener("change", async event => {
+    targetMode = event.target.value === "design" ? "design" : "code";
+    renderModeControls();
+    await saveDraft();
+    const status = await refreshPageStatus();
+    if (targetMode === "code") await refreshProjects(projectSelect.value);
+    if (!status?.isTargetPage) usageSummary.textContent = `Open ${targetLabel()} to read usage`;
+  });
+});
+
 useResetButton.addEventListener("click", async () => {
   clearMessage();
   await saveDraft();
@@ -189,11 +205,13 @@ cancelButton.addEventListener("click", async () => {
 });
 
 async function saveDraft() {
-  await sendRuntimeMessage({
+  const payload = {
     type: "SAVE_DRAFT",
     prompt: promptInput.value,
-    project: projectSelect.value
-  });
+    targetMode
+  };
+  if (targetMode === "code") payload.project = projectSelect.value;
+  await sendRuntimeMessage(payload);
 }
 
 async function refreshUsage(force = false) {
@@ -204,7 +222,7 @@ async function refreshUsage(force = false) {
     return latestUsage;
   } catch (error) {
     showMessage(error.message || "Could not read Claude usage.", true);
-    usageSummary.textContent = "Open Claude Code and try again";
+    usageSummary.textContent = `Open ${targetLabel()} and try again`;
     return null;
   } finally {
     setLoading(false);
@@ -224,13 +242,15 @@ async function refreshPageStatus() {
 }
 
 async function scheduleAt(runAt, source) {
-  const state = await sendRuntimeMessage({
+  const payload = {
     type: "SCHEDULE_PROMPT",
     runAt,
     source,
     prompt: promptInput.value,
-    project: projectSelect.value
-  });
+    targetMode
+  };
+  if (targetMode === "code") payload.project = projectSelect.value;
+  const state = await sendRuntimeMessage(payload);
   renderSchedule(state.schedule);
   showMessage(`Scheduled for ${formatDate(runAt)}.`);
 }
@@ -264,24 +284,27 @@ function stopUsageTimer() {
 }
 
 function renderPageStatus(status) {
-  const isReady = status?.isClaudeCodePage && status?.hasPromptEditor;
-  const isClaudeCodePage = status?.isClaudeCodePage;
+  const isReady = status?.isTargetPage && status?.hasPromptEditor;
+  const isTargetPage = status?.isTargetPage;
+  const label = targetLabel();
 
   pageStatusDot.classList.toggle("ready", isReady);
-  pageStatusDot.classList.toggle("warning", isClaudeCodePage && !isReady);
-  pageStatusDot.classList.toggle("offline", !isClaudeCodePage);
+  pageStatusDot.classList.toggle("warning", isTargetPage && !isReady);
+  pageStatusDot.classList.toggle("offline", !isTargetPage);
 
   if (isReady) {
-    pageStatusText.textContent = "Claude Code input box detected";
-  } else if (isClaudeCodePage) {
-    pageStatusText.textContent = "Claude Code page detected, input box missing";
+    pageStatusText.textContent = `${label} input box detected`;
+  } else if (isTargetPage) {
+    pageStatusText.textContent = `${label} page detected, input box missing`;
   } else {
-    pageStatusText.textContent = "No Claude Code page detected";
+    pageStatusText.textContent = `No ${label} page detected`;
   }
 
-  if (isClaudeCodePage && status?.projectName) {
+  if (targetMode === "design") {
+    projectText.textContent = "Design has no project selector";
+  } else if (isTargetPage && status?.projectName) {
     projectText.textContent = `Project: ${status.projectName}`;
-  } else if (isClaudeCodePage) {
+  } else if (isTargetPage) {
     projectText.textContent = "Project unavailable";
   } else {
     projectText.textContent = "Open Claude Code to show project";
@@ -294,6 +317,10 @@ function renderPageStatus(status) {
 // Show whether an Auto run will continue this exact chat or open a new session.
 function renderTargetHint() {
   if (!targetHint) return;
+  if (targetMode === "design") {
+    targetHint.textContent = "";
+    return;
+  }
   const isAuto = !projectSelect.value;
   if (isAuto && latestPageStatus?.isConversation) {
     targetHint.textContent = "↳ Will continue this chat";
@@ -302,6 +329,15 @@ function renderTargetHint() {
   } else {
     targetHint.textContent = "↳ Will start a new session in the selected project";
   }
+}
+
+function renderModeControls() {
+  projectField.classList.toggle("hidden", targetMode === "design");
+  renderTargetHint();
+}
+
+function targetLabel() {
+  return targetMode === "design" ? "Claude Design" : "Claude Code";
 }
 
 function renderSchedule(schedule) {

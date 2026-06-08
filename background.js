@@ -1,5 +1,9 @@
 const CACHE_TTL_MS = 60_000;
 const ALARM_NAME = "claude-limit-runner";
+const TARGET_URLS = {
+  code: "https://claude.ai/code",
+  design: "https://claude.ai/design"
+};
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install" || reason === "update") {
@@ -17,15 +21,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name !== ALARM_NAME) return;
-  const { prompt = "", project = "", schedule } = await chrome.storage.local.get(["prompt", "schedule", "project"]);
+  const { prompt = "", project = "", schedule, targetMode = "code" } = await chrome.storage.local.get(["prompt", "schedule", "project", "targetMode"]);
   if (!prompt.trim()) return;
 
   try {
     const targetUrl = schedule?.targetUrl || "";
+    const scheduledMode = normalizeTargetMode(schedule?.targetMode || targetMode);
     const continueChat = Boolean(targetUrl);
-    const tab = await getOrOpenClaudeTab(targetUrl);
+    const tab = await getOrOpenClaudeTab(scheduledMode, targetUrl);
     await waitForTabReady(tab.id);
-    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, project, continueChat });
+    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, project, targetMode: scheduledMode, continueChat });
     await chrome.storage.local.remove("schedule");
     await chrome.notifications.create({
       type: "basic",
@@ -51,6 +56,7 @@ async function handleMessage(message) {
   if (message.type === "SAVE_DRAFT") {
     const update = { prompt: message.prompt || "" };
     if (typeof message.project === "string") update.project = message.project;
+    if (typeof message.targetMode === "string") update.targetMode = normalizeTargetMode(message.targetMode);
     await chrome.storage.local.set(update);
     return getState();
   }
@@ -73,14 +79,20 @@ async function handleMessage(message) {
     // "Auto" (no explicit project) means "continue whatever chat I'm in" — pin the
     // exact conversation URL so the run returns to this thread instead of the launcher.
     let targetUrl = "";
-    if (!message.project) {
+    const targetMode = normalizeTargetMode(message.targetMode);
+    if (targetMode === "code" && !message.project) {
       const tab = await findActiveTab();
       const url = tab?.url || "";
       if (url.startsWith("https://claude.ai/code") && isConversationUrl(url)) targetUrl = url;
+    } else if (targetMode === "design") {
+      const tab = await findActiveTab();
+      const url = tab?.url || "";
+      if (url.startsWith(TARGET_URLS.design) && isConversationUrl(url)) targetUrl = url;
     }
-    const schedule = { runAt, source: message.source || "manual time", createdAt: Date.now(), targetUrl };
+    const schedule = { runAt, source: message.source || "manual time", createdAt: Date.now(), targetMode, targetUrl };
     const update = { prompt: message.prompt || "", schedule };
     if (typeof message.project === "string") update.project = message.project;
+    update.targetMode = targetMode;
     await chrome.storage.local.set(update);
     await chrome.alarms.clear(ALARM_NAME);
     await chrome.alarms.create(ALARM_NAME, { when: runAt });
@@ -97,8 +109,8 @@ async function handleMessage(message) {
 }
 
 async function getState() {
-  const { prompt = "", project = "", schedule = null } = await chrome.storage.local.get(["prompt", "schedule", "project"]);
-  return { prompt, project, schedule };
+  const { prompt = "", project = "", schedule = null, targetMode = "code" } = await chrome.storage.local.get(["prompt", "schedule", "project", "targetMode"]);
+  return { prompt, project, schedule, targetMode: normalizeTargetMode(targetMode) };
 }
 
 async function getUsage(force = false) {
@@ -133,10 +145,14 @@ async function getUsageTab() {
 }
 
 async function getPageStatus() {
+  const { targetMode = "code" } = await chrome.storage.local.get("targetMode");
+  const mode = normalizeTargetMode(targetMode);
   const tab = await findActiveTab();
-  if (!tab?.id || !tab.url?.startsWith("https://claude.ai/code")) {
+  if (!tab?.id || !tab.url?.startsWith(TARGET_URLS[mode])) {
     return {
       isClaudeCodePage: false,
+      isClaudeDesignPage: false,
+      isTargetPage: false,
       hasPromptEditor: false,
       projectName: "",
       checkedAt: Date.now()
@@ -144,10 +160,12 @@ async function getPageStatus() {
   }
 
   try {
-    return await sendToContent(tab.id, { type: "GET_PAGE_STATUS" });
+    return await sendToContent(tab.id, { type: "GET_PAGE_STATUS", targetMode: mode });
   } catch (error) {
     return {
-      isClaudeCodePage: true,
+      isClaudeCodePage: mode === "code",
+      isClaudeDesignPage: mode === "design",
+      isTargetPage: true,
       hasPromptEditor: false,
       projectName: "",
       checkedAt: Date.now()
@@ -156,6 +174,11 @@ async function getPageStatus() {
 }
 
 async function getProjects() {
+  const { targetMode = "code" } = await chrome.storage.local.get("targetMode");
+  if (normalizeTargetMode(targetMode) !== "code") {
+    return { projects: [], current: "", checkedAt: Date.now() };
+  }
+
   const tab = await findActiveTab();
   if (!tab?.id || !tab.url?.startsWith("https://claude.ai/code")) {
     return { projects: [], current: "", checkedAt: Date.now() };
@@ -177,7 +200,9 @@ async function findActiveTab() {
   return focusedWindow?.tabs?.find(tab => tab.active) || null;
 }
 
-async function getOrOpenClaudeTab(targetUrl = "") {
+async function getOrOpenClaudeTab(targetMode = "code", targetUrl = "") {
+  const mode = normalizeTargetMode(targetMode);
+  const launcherUrl = TARGET_URLS[mode];
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
 
   // Continue a specific chat: reuse the exact tab if it's still on that URL,
@@ -188,7 +213,7 @@ async function getOrOpenClaudeTab(targetUrl = "") {
       await chrome.tabs.update(onUrl.id, { active: true });
       return onUrl;
     }
-    const reusable = tabs.find(tab => tab.url?.startsWith("https://claude.ai/code"));
+    const reusable = tabs.find(tab => tab.url?.startsWith(launcherUrl));
     if (reusable?.id) {
       await chrome.tabs.update(reusable.id, { url: targetUrl, active: true });
       return chrome.tabs.get(reusable.id);
@@ -196,12 +221,12 @@ async function getOrOpenClaudeTab(targetUrl = "") {
     return chrome.tabs.create({ url: targetUrl, active: true });
   }
 
-  const existing = tabs.find(tab => tab.url?.startsWith("https://claude.ai/code"));
+  const existing = tabs.find(tab => tab.url?.startsWith(launcherUrl));
   if (existing?.id) {
     await chrome.tabs.update(existing.id, { active: true });
     return existing;
   }
-  return chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: true });
+  return chrome.tabs.create({ url: launcherUrl, active: true });
 }
 
 function isConversationUrl(url) {
@@ -211,6 +236,10 @@ function isConversationUrl(url) {
   } catch {
     return false;
   }
+}
+
+function normalizeTargetMode(targetMode) {
+  return targetMode === "design" ? "design" : "code";
 }
 
 async function waitForTabReady(tabId) {
