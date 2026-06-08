@@ -107,7 +107,13 @@ async function getUsage(force = false) {
     return usageCache;
   }
 
-  const tab = await getUsageTab();
+  const { tab, reused } = await getUsageTab();
+  // A reused usage tab may have been sitting open for hours showing stale numbers —
+  // the SPA won't re-fetch usage on its own, so reload it before scraping. A freshly
+  // created tab already loads current data and needs no reload.
+  if (reused) {
+    await chrome.tabs.reload(tab.id);
+  }
   await waitForTabReady(tab.id);
   const usage = await sendToContent(tab.id, { type: "GET_USAGE" });
   const cache = { ...usage, lastPulledAt: Date.now() };
@@ -121,8 +127,9 @@ async function getUsage(force = false) {
 async function getUsageTab() {
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
   const onUsage = tabs.find(tab => tab.url?.includes("#settings/usage"));
-  if (onUsage?.id) return onUsage;
-  return chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: false });
+  if (onUsage?.id) return { tab: onUsage, reused: true };
+  const tab = await chrome.tabs.create({ url: "https://claude.ai/code#settings/usage", active: false });
+  return { tab, reused: false };
 }
 
 async function getPageStatus() {

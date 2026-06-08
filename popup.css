@@ -45,6 +45,9 @@ body {
 
 .refresh {
   flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   padding: 0;
@@ -53,7 +56,13 @@ body {
   line-height: 1;
 }
 
-.refresh.spinning {
+.refreshIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.refresh.spinning .refreshIcon {
   animation: spin 0.7s linear infinite;
 }
 

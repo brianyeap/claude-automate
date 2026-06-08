@@ -1,0 +1,34 @@
+#!/bin/sh
+# Guard: block a push if extension source changed but manifest.json's "version"
+# wasn't bumped. The in-app update banner only detects releases by comparing the
+# manifest version against GitHub, so an unbumped version ships as "no update".
+#
+# Active via: git config core.hooksPath hooks
+# Bypass once: git push --no-verify
+
+remote_ref="origin/main"
+git rev-parse --verify "$remote_ref" >/dev/null 2>&1 || exit 0
+
+# Source files whose change constitutes a shippable release.
+src="popup.js background.js contentScript.js popup.html popup.css manifest.json"
+
+changed=$(git diff --name-only "$remote_ref"...HEAD -- $src)
+[ -z "$changed" ] && exit 0
+
+extract_version() {
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+old_ver=$(git show "$remote_ref:manifest.json" 2>/dev/null | extract_version)
+new_ver=$(extract_version < manifest.json)
+
+if [ "$old_ver" = "$new_ver" ]; then
+  echo "✗ Push blocked: source files changed but manifest.json version is still $new_ver."
+  echo "  Bump \"version\" in manifest.json so the update banner detects this release."
+  echo "  Changed files:"
+  echo "$changed" | sed 's/^/    /'
+  echo "  (To push anyway without bumping: git push --no-verify)"
+  exit 1
+fi
+
+exit 0
