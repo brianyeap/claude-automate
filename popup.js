@@ -1,14 +1,15 @@
-const CREDIT_LIMIT = 5000;
-const DEFAULT_PERSONALITY = {
-  name: "Memo",
-  tone: "professional",
-  length: "concise",
-  creativity: 50,
-  emoji: true,
-  proactive: true
-};
+const GITHUB_REPO = "brianyeap/claude-automate";
+const UPDATE_CHECK_TTL = 60 * 60 * 1000;
 
 const usageSummary = document.querySelector("#usageSummary");
+const sessionUsage = document.querySelector("#sessionUsage");
+const resetTime = document.querySelector("#resetTime");
+const pageStatusDot = document.querySelector("#pageStatusDot");
+const pageStatusText = document.querySelector("#pageStatusText");
+const projectText = document.querySelector("#projectText");
+const projectSelect = document.querySelector("#projectSelect");
+const projectField = projectSelect.closest(".field");
+const targetHint = document.querySelector("#targetHint");
 const promptInput = document.querySelector("#promptInput");
 const manualTime = document.querySelector("#manualTime");
 const useResetButton = document.querySelector("#useResetButton");
@@ -16,180 +17,201 @@ const scheduleButton = document.querySelector("#scheduleButton");
 const scheduledText = document.querySelector("#scheduledText");
 const cancelButton = document.querySelector("#cancelButton");
 const refreshButton = document.querySelector("#refreshButton");
-const sendButton = document.querySelector("#sendButton");
 const toast = document.querySelector("#toast");
-const thread = document.querySelector("#thread");
-const suggestions = document.querySelector("#suggestions");
-const onlinePill = document.querySelector("#onlinePill");
-const scrim = document.querySelector("#scrim");
-const usageSheet = document.querySelector("#usageSheet");
-const personalitySheet = document.querySelector("#personalitySheet");
 
 let latestUsage = null;
 let latestPageStatus = null;
+let pageStatusTimer = null;
 let scheduleTimer = null;
 let usageTimer = null;
 let currentSchedule = null;
-let currentState = null;
-let busy = false;
+let targetMode = "code";
+
+// Show local version immediately while update check is in-flight.
+document.querySelector("#updateBannerText").textContent = `v${chrome.runtime.getManifest().version}`;
 
 init();
 
 async function init() {
-  document.querySelector("#greetingTime").textContent = formatDate(Date.now());
-  const { memoPersonality = DEFAULT_PERSONALITY } = await chrome.storage.local.get("memoPersonality");
-  applyPersonality({ ...DEFAULT_PERSONALITY, ...memoPersonality });
-
-  currentState = await sendRuntimeMessage({ type: "GET_STATE" });
-  promptInput.value = currentState.prompt || "";
-  renderSchedule(currentState.schedule);
-  autosize();
-
-  wireEvents();
-  await Promise.all([refreshPageStatus(), refreshUsage()]);
-  usageTimer = setInterval(renderUsageLive, 1000);
-}
-
-function wireEvents() {
-  window.addEventListener("pagehide", () => {
-    if (scheduleTimer) clearInterval(scheduleTimer);
-    if (usageTimer) clearInterval(usageTimer);
-  });
-
-  refreshButton.addEventListener("click", async () => {
-    clearMessage();
-    await Promise.all([refreshPageStatus(), refreshUsage(true)]);
-  });
-
-  promptInput.addEventListener("input", () => {
-    autosize();
-    saveDraft();
-  });
-  promptInput.addEventListener("keydown", event => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      sendNow();
-    }
-  });
-  sendButton.addEventListener("click", sendNow);
-
-  document.querySelectorAll("[data-fill]").forEach(button => {
-    button.addEventListener("click", () => {
-      promptInput.value = button.dataset.fill;
-      autosize();
-      saveDraft();
-      promptInput.focus();
-    });
-  });
-
-  useResetButton.addEventListener("click", scheduleForReset);
-  scheduleButton.addEventListener("click", scheduleManual);
-  cancelButton.addEventListener("click", cancelSchedule);
-
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !("schedule" in changes)) return;
-    renderSchedule(changes.schedule.newValue || null);
-    if (!changes.schedule.newValue) addAiMessage("Scheduled run fired or was cleared.");
-  });
-
-  document.querySelector("#usageButton").addEventListener("click", () => openSheet(usageSheet));
-  document.querySelector("#personalityButton").addEventListener("click", () => openSheet(personalitySheet));
-  scrim.addEventListener("click", closeSheets);
-  document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", closeSheets));
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape") closeSheets();
-  });
-
-  wirePersonality();
-}
-
-function wirePersonality() {
-  document.querySelectorAll("#lengthSegment button").forEach(button => {
-    button.addEventListener("click", () => {
-      document.querySelectorAll("#lengthSegment button").forEach(item => item.classList.toggle("active", item === button));
-    });
-  });
-
-  const range = document.querySelector("#creativityRange");
-  range.addEventListener("input", syncCreativityLabel);
-  document.querySelector("#resetPersonality").addEventListener("click", () => {
-    applyPersonality(DEFAULT_PERSONALITY, true);
-  });
-  document.querySelector("#savePersonality").addEventListener("click", async () => {
-    const personality = readPersonalityForm();
-    await chrome.storage.local.set({ memoPersonality: personality });
-    applyPersonality(personality);
-    showMessage("Personality saved.");
-    closeSheets();
-  });
-}
-
-async function sendNow() {
-  const text = promptInput.value.trim();
-  if (!text || busy) return;
-  clearMessage();
-  busy = true;
-  suggestions.classList.add("hide");
-  addUserMessage(text);
-  promptInput.value = "";
-  autosize();
-  await saveDraft("");
-
-  const thinking = addThinking();
-  try {
-    const result = await sendRuntimeMessage({ type: "SEND_PROMPT_NOW", prompt: text });
-    thinking.finish(`Sent to ${targetLabel(result.targetMode)}. I will keep the current Claude tab in focus so you can watch it run.`);
-    bumpCredits(12);
-  } catch (error) {
-    thinking.finish(`I could not send that yet: ${error.message || "Claude was not ready"}. You can still schedule it for the next reset.`);
-    showMessage(error.message || "Could not send prompt.", true);
-  } finally {
-    busy = false;
+  const state = await sendRuntimeMessage({ type: "GET_STATE" });
+  targetMode = state.targetMode || "code";
+  document.querySelector(`input[name="targetMode"][value="${targetMode}"]`).checked = true;
+  promptInput.value = state.prompt || "";
+  renderModeControls();
+  renderSchedule(state.schedule);
+  const status = await refreshPageStatus();
+  pageStatusTimer = setInterval(refreshPageStatus, 1000);
+  if (targetMode === "code") await refreshProjects(state.project);
+  checkForUpdates();
+  if (!status?.isTargetPage) {
+    usageSummary.textContent = `Open ${targetLabel()} to read usage`;
+    return;
   }
+  await refreshUsage();
 }
 
-async function scheduleForReset() {
+async function checkForUpdates(force = false) {
+  const local = chrome.runtime.getManifest().version;
+  const { updateCache } = await chrome.storage.local.get("updateCache");
+  if (!force && updateCache?.checkedAt && Date.now() - updateCache.checkedAt < UPDATE_CHECK_TTL) {
+    renderUpdateBanner(updateCache);
+    return;
+  }
+
+  try {
+    // raw.githubusercontent is fronted by a CDN with a 5-min edge cache that
+    // `cache: "no-store"` does NOT bypass (that only affects the browser cache).
+    // A unique query string keys a fresh edge fetch so pushes show up immediately.
+    const res = await fetch(
+      `https://raw.githubusercontent.com/${GITHUB_REPO}/main/manifest.json?t=${Date.now()}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return;
+    const { version: remote } = await res.json();
+    if (!isNewerVersion(remote, local)) {
+      await chrome.storage.local.set({ updateCache: { upToDate: true, checkedAt: Date.now() } });
+      return;
+    }
+
+    let commitsBehind = 0;
+    try {
+      const { installedAt } = await chrome.storage.local.get("installedAt");
+      const since = installedAt ?? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const apiRes = await fetch(
+        `https://api.github.com/repos/${GITHUB_REPO}/commits?sha=main&since=${since}&per_page=100`
+      );
+      if (apiRes.ok) {
+        const commits = await apiRes.json();
+        commitsBehind = Array.isArray(commits) ? commits.length : 0;
+      }
+    } catch {}
+
+    const cache = { upToDate: false, remote, local, commitsBehind, checkedAt: Date.now() };
+    await chrome.storage.local.set({ updateCache: cache });
+    renderUpdateBanner(cache);
+  } catch {}
+}
+
+function isNewerVersion(remote, local) {
+  const parse = v => v.split(".").map(Number);
+  const [rA, rB, rC] = parse(remote);
+  const [lA, lB, lC] = parse(local);
+  return rA !== lA ? rA > lA : rB !== lB ? rB > lB : rC > lC;
+}
+
+function renderUpdateBanner({ upToDate, remote, commitsBehind }) {
+  const banner = document.querySelector("#updateBanner");
+  const text = document.querySelector("#updateBannerText");
+  const link = document.querySelector("#updateBannerLink");
+  if (!banner || !text || !link) return;
+  const local = chrome.runtime.getManifest().version;
+
+  if (upToDate || !remote) {
+    text.textContent = `v${local} · latest`;
+    banner.classList.add("upToDate");
+    link.hidden = true;
+    return;
+  }
+
+  const behind = commitsBehind > 0
+    ? ` · ${commitsBehind} commit${commitsBehind === 1 ? "" : "s"} behind`
+    : "";
+  text.textContent = `v${local} → v${remote}${behind}`;
+  banner.classList.remove("upToDate");
+  link.hidden = false;
+}
+
+async function refreshProjects(savedProject) {
+  let result = { projects: [], current: "" };
+  try {
+    result = await sendRuntimeMessage({ type: "GET_PROJECTS" });
+  } catch (error) {
+    // Keep the bare "Auto" option if the project list can't be read.
+  }
+
+  const autoLabel = result.current ? `Auto (current page: ${result.current})` : "Auto (current page)";
+  const options = [`<option value="">${escapeHtml(autoLabel)}</option>`];
+  for (const project of result.projects || []) {
+    const value = project.repo || project.name;
+    options.push(`<option value="${escapeHtml(value)}">${escapeHtml(project.name)}</option>`);
+  }
+  projectSelect.innerHTML = options.join("");
+
+  // Default to the saved project if it still exists, otherwise auto-detect.
+  const values = [...projectSelect.options].map(option => option.value);
+  projectSelect.value = savedProject && values.includes(savedProject) ? savedProject : "";
+}
+
+window.addEventListener("pagehide", () => {
+  if (pageStatusTimer) clearInterval(pageStatusTimer);
+  stopScheduleTimer();
+  stopUsageTimer();
+});
+
+refreshButton.addEventListener("click", async () => {
+  clearMessage();
+  await Promise.all([refreshUsage(true), checkForUpdates(true)]);
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !("schedule" in changes)) return;
+  const schedule = changes.schedule.newValue || null;
+  renderSchedule(schedule);
+  if (!schedule) showMessage("Scheduled run fired.");
+});
+
+promptInput.addEventListener("input", saveDraft);
+
+projectSelect.addEventListener("change", () => {
+  renderTargetHint();
+  saveDraft();
+});
+
+document.querySelectorAll('input[name="targetMode"]').forEach(input => {
+  input.addEventListener("change", async event => {
+    targetMode = event.target.value === "design" ? "design" : "code";
+    renderModeControls();
+    await saveDraft();
+    const status = await refreshPageStatus();
+    if (targetMode === "code") await refreshProjects(projectSelect.value);
+    if (!status?.isTargetPage) usageSummary.textContent = `Open ${targetLabel()} to read usage`;
+  });
+});
+
+useResetButton.addEventListener("click", async () => {
   clearMessage();
   await saveDraft();
-  if (!promptInput.value.trim()) return showMessage("Type the prompt first.", true);
+  if (!promptInput.value.trim()) return showMessage("Paste a prompt first.", true);
   const usage = latestUsage || await refreshUsage();
   if (!usage?.resetAt) return showMessage("Claude did not expose a session reset time yet.", true);
+  // Fire 1 minute after the reset so the new session window is definitely open.
   await scheduleAt(usage.resetAt + 60_000, "next limit reset +1 min");
-}
+});
 
-async function scheduleManual() {
+scheduleButton.addEventListener("click", async () => {
   clearMessage();
   await saveDraft();
-  if (!promptInput.value.trim()) return showMessage("Type the prompt first.", true);
+  if (!promptInput.value.trim()) return showMessage("Paste a prompt first.", true);
   if (!manualTime.value) return showMessage("Choose a manual time.", true);
   const runAt = new Date(manualTime.value).getTime();
   if (!Number.isFinite(runAt) || runAt <= Date.now()) return showMessage("Choose a future time.", true);
   await scheduleAt(runAt, "manual time");
-}
+});
 
-async function cancelSchedule() {
+cancelButton.addEventListener("click", async () => {
   const state = await sendRuntimeMessage({ type: "CANCEL_SCHEDULE" });
   renderSchedule(state.schedule);
   showMessage("Scheduled run cancelled.");
-}
+});
 
-async function saveDraft(prompt = promptInput.value) {
-  const targetMode = currentState?.targetMode || "code";
-  currentState = await sendRuntimeMessage({ type: "SAVE_DRAFT", prompt, targetMode });
-}
-
-async function scheduleAt(runAt, source) {
-  const targetMode = currentState?.targetMode || "code";
-  const state = await sendRuntimeMessage({
-    type: "SCHEDULE_PROMPT",
-    runAt,
-    source,
+async function saveDraft() {
+  const payload = {
+    type: "SAVE_DRAFT",
     prompt: promptInput.value,
     targetMode
-  });
-  currentState = state;
-  renderSchedule(state.schedule);
-  addAiMessage(`Done. I scheduled that for ${formatDate(runAt)}.`);
+  };
+  if (targetMode === "code") payload.project = projectSelect.value;
+  await sendRuntimeMessage(payload);
 }
 
 async function refreshUsage(force = false) {
@@ -199,8 +221,8 @@ async function refreshUsage(force = false) {
     renderUsage(latestUsage);
     return latestUsage;
   } catch (error) {
-    usageSummary.textContent = "Open Claude to read usage";
-    renderCredits(1240, CREDIT_LIMIT);
+    showMessage(error.message || "Could not read Claude usage.", true);
+    usageSummary.textContent = `Open ${targetLabel()} and try again`;
     return null;
   } finally {
     setLoading(false);
@@ -209,58 +231,113 @@ async function refreshUsage(force = false) {
 
 async function refreshPageStatus() {
   try {
-    latestPageStatus = await sendRuntimeMessage({ type: "GET_PAGE_STATUS" });
-  } catch {
-    latestPageStatus = null;
+    const status = await sendRuntimeMessage({ type: "GET_PAGE_STATUS" });
+    renderPageStatus(status);
+    return status;
+  } catch (error) {
+    const status = { isClaudeCodePage: false, hasPromptEditor: false, projectName: "" };
+    renderPageStatus(status);
+    return status;
   }
-  renderPageStatus(latestPageStatus);
-  return latestPageStatus;
 }
 
-function renderPageStatus(status) {
-  const ready = status?.isTargetPage && status?.hasPromptEditor;
-  onlinePill.classList.toggle("offline", !ready);
-  onlinePill.lastChild.textContent = ready ? " Online" : " Offline";
+async function scheduleAt(runAt, source) {
+  const payload = {
+    type: "SCHEDULE_PROMPT",
+    runAt,
+    source,
+    prompt: promptInput.value,
+    targetMode
+  };
+  if (targetMode === "code") payload.project = projectSelect.value;
+  const state = await sendRuntimeMessage(payload);
+  renderSchedule(state.schedule);
+  showMessage(`Scheduled for ${formatDate(runAt)}.`);
 }
 
 function renderUsage(usage) {
-  const used = creditsFromUsage(usage);
-  renderCredits(used, CREDIT_LIMIT);
+  if (!usage) return;
+  sessionUsage.textContent = usage.sessionUsage || "-";
   renderUsageLive();
+  startUsageTimer();
 }
 
 function renderUsageLive() {
-  if (!latestUsage) return;
-  const reset = latestUsage.resetAt
-    ? `${formatDate(latestUsage.resetAt)} (${timeUntil(latestUsage.resetAt)})`
-    : latestUsage.resetText || "No reset time found";
-  usageSummary.textContent = latestUsage.sessionUsage || "Usage checked";
-  document.querySelector("#usageResetText").textContent = `Reset: ${reset}`;
+  const usage = latestUsage;
+  if (!usage) return;
+  resetTime.textContent = usage.resetAt
+    ? `${formatDate(usage.resetAt)} (${timeUntil(usage.resetAt)})`
+    : usage.resetText || "-";
+  usageSummary.textContent = usage.lastPulledAt
+    ? `Usage checked ${relativeTime(usage.lastPulledAt)}`
+    : "Usage checked";
 }
 
-function creditsFromUsage(usage) {
-  const percent = Number((usage?.sessionUsage || "").match(/(\d+(?:\.\d+)?)\s*%/)?.[1]);
-  if (Number.isFinite(percent)) return Math.min(CREDIT_LIMIT, Math.round(CREDIT_LIMIT * percent / 100));
-  return 1240;
+function startUsageTimer() {
+  if (usageTimer) return;
+  usageTimer = setInterval(renderUsageLive, 1000);
 }
 
-function renderCredits(used, limit) {
-  const left = Math.max(0, limit - used);
-  const remainingPct = Math.max(0, Math.min(100, left / limit * 100));
-  document.querySelector("#creditUsed").textContent = used.toLocaleString();
-  document.querySelector("#creditLimit").textContent = limit.toLocaleString();
-  document.querySelector("#creditUsedMeta").textContent = used.toLocaleString();
-  document.querySelector("#creditLimitMeta").textContent = limit.toLocaleString();
-  document.querySelector("#creditLeft").textContent = left.toLocaleString();
-  document.querySelector(".creditRing").style.setProperty("--credit-progress", `${remainingPct}%`);
-  document.querySelector("#scheduleUsage").textContent = `${Math.min(100, Math.round(used / limit * 26))}%`;
-  document.querySelector("#responseUsage").textContent = `${Math.min(100, Math.round(used / limit * 88))}%`;
-  document.querySelector("#statusUsage").textContent = `${Math.min(100, Math.round(used / limit * 12))}%`;
+function stopUsageTimer() {
+  if (usageTimer) clearInterval(usageTimer);
+  usageTimer = null;
 }
 
-function bumpCredits(amount) {
-  const current = Number(document.querySelector("#creditUsed").textContent.replace(/,/g, "")) || creditsFromUsage(latestUsage);
-  renderCredits(Math.min(CREDIT_LIMIT, current + amount), CREDIT_LIMIT);
+function renderPageStatus(status) {
+  const isReady = status?.isTargetPage && status?.hasPromptEditor;
+  const isTargetPage = status?.isTargetPage;
+  const label = targetLabel();
+
+  pageStatusDot.classList.toggle("ready", isReady);
+  pageStatusDot.classList.toggle("warning", isTargetPage && !isReady);
+  pageStatusDot.classList.toggle("offline", !isTargetPage);
+
+  if (isReady) {
+    pageStatusText.textContent = `${label} input box detected`;
+  } else if (isTargetPage) {
+    pageStatusText.textContent = `${label} page detected, input box missing`;
+  } else {
+    pageStatusText.textContent = `No ${label} page detected`;
+  }
+
+  if (targetMode === "design") {
+    projectText.textContent = "Design has no project selector";
+  } else if (isTargetPage && status?.projectName) {
+    projectText.textContent = `Project: ${status.projectName}`;
+  } else if (isTargetPage) {
+    projectText.textContent = "Project unavailable";
+  } else {
+    projectText.textContent = "Open Claude Code to show project";
+  }
+
+  latestPageStatus = status;
+  renderTargetHint();
+}
+
+// Show whether an Auto run will continue this exact chat or open a new session.
+function renderTargetHint() {
+  if (!targetHint) return;
+  if (targetMode === "design") {
+    targetHint.textContent = "";
+    return;
+  }
+  const isAuto = !projectSelect.value;
+  if (isAuto && latestPageStatus?.isConversation) {
+    targetHint.textContent = "↳ Will continue this chat";
+  } else if (isAuto) {
+    targetHint.textContent = "↳ Will start a new session on the current page";
+  } else {
+    targetHint.textContent = "↳ Will start a new session in the selected project";
+  }
+}
+
+function renderModeControls() {
+  projectField.classList.toggle("hidden", targetMode === "design");
+  renderTargetHint();
+}
+
+function targetLabel() {
+  return targetMode === "design" ? "Claude Design" : "Claude Code";
 }
 
 function renderSchedule(schedule) {
@@ -289,150 +366,6 @@ function stopScheduleTimer() {
   scheduleTimer = null;
 }
 
-function addUserMessage(text) {
-  const article = document.createElement("article");
-  article.className = "message user animIn";
-  article.innerHTML = `
-    <div class="avatar meAvatar" aria-hidden="true">You</div>
-    <div>
-      <div class="bubble"><p>${escapeHtml(text)}</p></div>
-      <time>${formatDate(Date.now())}</time>
-    </div>`;
-  thread.appendChild(article);
-  scrollDown();
-}
-
-function addAiMessage(text) {
-  const article = document.createElement("article");
-  article.className = "message ai animIn";
-  article.innerHTML = `
-    <div class="avatar aiAvatar" aria-hidden="true">✦</div>
-    <div>
-      <div class="bubble"><p>${escapeHtml(text)}</p></div>
-      <time>${formatDate(Date.now())}</time>
-    </div>`;
-  thread.appendChild(article);
-  scrollDown();
-}
-
-function addThinking() {
-  const statuses = [
-    "Reading your request...",
-    "Checking Claude page status...",
-    "Preparing the handoff..."
-  ];
-  const article = document.createElement("article");
-  article.className = "thinking animIn";
-  article.innerHTML = `
-    <div class="avatar aiAvatar" aria-hidden="true">✦</div>
-    <div class="thinkCard">
-      <div class="thinkRow">
-        <span class="orbit" aria-hidden="true"></span>
-        <span class="thinkText">${statuses[0]}</span>
-        <span class="thinkElapsed">0.0s</span>
-      </div>
-    </div>`;
-  thread.appendChild(article);
-  scrollDown();
-
-  const text = article.querySelector(".thinkText");
-  const elapsed = article.querySelector(".thinkElapsed");
-  const started = performance.now();
-  let index = 0;
-  const statusTimer = setInterval(() => {
-    index = Math.min(statuses.length - 1, index + 1);
-    text.textContent = statuses[index];
-  }, 650);
-  const elapsedTimer = setInterval(() => {
-    elapsed.textContent = `${((performance.now() - started) / 1000).toFixed(1)}s`;
-  }, 100);
-
-  return {
-    finish(message) {
-      clearInterval(statusTimer);
-      clearInterval(elapsedTimer);
-      const total = ((performance.now() - started) / 1000).toFixed(1);
-      article.className = "aiGroup animIn";
-      article.innerHTML = `
-        <div class="avatar aiAvatar" aria-hidden="true">✦</div>
-        <div class="aiStack">
-          <div class="bubble"><p><span class="streamTarget"></span><span class="streamCursor"></span></p></div>
-          <time>Thought for ${total}s · ${formatDate(Date.now())}</time>
-        </div>`;
-      streamText(article.querySelector(".streamTarget"), article.querySelector(".streamCursor"), message);
-    }
-  };
-}
-
-function streamText(target, cursor, full) {
-  let index = 0;
-  const timer = setInterval(() => {
-    index += Math.max(1, Math.round(Math.random() * 3));
-    target.textContent = full.slice(0, index);
-    scrollDown();
-    if (index >= full.length) {
-      clearInterval(timer);
-      cursor.remove();
-    }
-  }, 18);
-}
-
-function autosize() {
-  promptInput.style.height = "auto";
-  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 120)}px`;
-  sendButton.classList.toggle("armed", promptInput.value.trim().length > 0);
-}
-
-function openSheet(sheet) {
-  scrim.classList.add("show");
-  sheet.classList.add("show");
-}
-
-function closeSheets() {
-  scrim.classList.remove("show");
-  usageSheet.classList.remove("show");
-  personalitySheet.classList.remove("show");
-}
-
-function applyPersonality(personality, syncForm = false) {
-  document.querySelector("#assistantName").textContent = personality.name || "Memo";
-  if (!syncForm) {
-    document.querySelector("#agentNameInput").value = personality.name || "Memo";
-    document.querySelector("#toneSelect").value = personality.tone || "professional";
-    document.querySelector("#creativityRange").value = personality.creativity ?? 50;
-    document.querySelector("#emojiToggle").checked = personality.emoji !== false;
-    document.querySelector("#proactiveToggle").checked = personality.proactive !== false;
-  }
-  document.querySelectorAll("#lengthSegment button").forEach(button => {
-    button.classList.toggle("active", button.dataset.value === (personality.length || "concise"));
-  });
-  if (syncForm) {
-    document.querySelector("#agentNameInput").value = personality.name;
-    document.querySelector("#toneSelect").value = personality.tone;
-    document.querySelector("#creativityRange").value = personality.creativity;
-    document.querySelector("#emojiToggle").checked = personality.emoji;
-    document.querySelector("#proactiveToggle").checked = personality.proactive;
-  }
-  syncCreativityLabel();
-}
-
-function readPersonalityForm() {
-  return {
-    name: document.querySelector("#agentNameInput").value.trim() || "Memo",
-    tone: document.querySelector("#toneSelect").value,
-    length: document.querySelector("#lengthSegment button.active")?.dataset.value || "concise",
-    creativity: Number(document.querySelector("#creativityRange").value),
-    emoji: document.querySelector("#emojiToggle").checked,
-    proactive: document.querySelector("#proactiveToggle").checked
-  };
-}
-
-function syncCreativityLabel() {
-  const value = Number(document.querySelector("#creativityRange").value);
-  const label = value < 20 ? "Precise" : value < 40 ? "Grounded" : value <= 60 ? "Balanced" : value < 80 ? "Expressive" : "Creative";
-  document.querySelector("#creativityLabel").textContent = label;
-}
-
 async function sendRuntimeMessage(payload) {
   const response = await chrome.runtime.sendMessage(payload);
   if (response?.error) throw new Error(response.error);
@@ -440,8 +373,11 @@ async function sendRuntimeMessage(payload) {
 }
 
 function setLoading(loading) {
+  useResetButton.disabled = loading;
+  scheduleButton.disabled = loading;
   refreshButton.disabled = loading;
   refreshButton.classList.toggle("spinning", loading);
+  if (loading) usageSummary.textContent = "Checking Claude usage…";
 }
 
 let toastTimer = null;
@@ -459,16 +395,6 @@ function clearMessage() {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
   toast.classList.remove("show");
-}
-
-function scrollDown() {
-  requestAnimationFrame(() => {
-    thread.scrollTop = thread.scrollHeight;
-  });
-}
-
-function targetLabel(targetMode) {
-  return targetMode === "design" ? "Claude Design" : "Claude Code";
 }
 
 function escapeHtml(text) {
@@ -498,4 +424,12 @@ function timeUntil(value) {
   if (!hours) return `${minutes}M`;
   if (!minutes) return `${hours}H`;
   return `${hours}H ${minutes}M`;
+}
+
+function relativeTime(value) {
+  const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes === 1 ? "1 min ago" : `${minutes} min ago`;
 }

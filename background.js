@@ -113,19 +113,6 @@ async function handleMessage(message) {
     return getState();
   }
 
-  if (message.type === "SEND_PROMPT_NOW") {
-    const prompt = message.prompt || "";
-    if (!prompt.trim()) throw new Error("No prompt was provided.");
-    const { project = "", targetMode = "code" } = await chrome.storage.local.get(["project", "targetMode"]);
-    const mode = normalizeTargetMode(targetMode);
-    const tab = await getOrOpenClaudeTab(mode);
-    await waitForTabReady(tab.id);
-    const currentTab = await chrome.tabs.get(tab.id);
-    const continueChat = Boolean(currentTab.url && isConversationUrl(currentTab.url));
-    await sendToContent(tab.id, { type: "RUN_PROMPT", prompt, project, targetMode: mode, continueChat });
-    return { ok: true, sentAt: Date.now(), targetMode: mode };
-  }
-
   if (message.type === "CANCEL_SCHEDULE") {
     await chrome.alarms.clear(ALARM_NAME);
     await chrome.alarms.clear(ACTIVE_REFRESH_ALARM_NAME);
@@ -292,7 +279,7 @@ async function getOrOpenClaudeTab(targetMode = "code", targetUrl = "") {
 
 function isConversationUrl(url) {
   try {
-    const path = new URL(url).pathname.replace(/^\/(code|design)\/?/, "");
+    const path = new URL(url).pathname.replace(/^\/code\/?/, "");
     return path.length > 0;
   } catch {
     return false;
