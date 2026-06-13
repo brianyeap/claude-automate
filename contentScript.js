@@ -320,22 +320,28 @@
   }
 
   async function submitDesignPrompt(editor) {
-    await pressEnter(editor);
-    await sleep(500);
-    if (!editor.value.trim()) return;
-
     const send = findEnabledSendButton(editor);
     if (send) {
       send.click();
       return;
     }
 
+    await pressEnter(editor);
+    await sleep(500);
+    if (!getPromptEditorText(editor).trim()) return;
+
     throw new Error("Could not submit Claude Design prompt with Enter or a Send button.");
   }
 
   function findPromptEditor(targetMode = "code") {
     if (normalizeTargetMode(targetMode) === "design") {
-      return [...document.querySelectorAll('textarea[data-testid="chat-composer-input"], textarea[placeholder="Describe what you want to create..."]')]
+      return [...document.querySelectorAll([
+        '[data-testid="chat-composer-input"][contenteditable="true"]',
+        '[role="textbox"][aria-label="Describe what you want to create..."][contenteditable="true"]',
+        '.ProseMirror[contenteditable="true"]',
+        'textarea[data-testid="chat-composer-input"]',
+        'textarea[placeholder="Describe what you want to create..."]'
+      ].join(", "))]
         .filter(isVisible)
         .sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom)[0];
     }
@@ -357,7 +363,11 @@
 
   function findEnabledSendButton(editor) {
     const er = editor.getBoundingClientRect();
-    return [...document.querySelectorAll('button[aria-label="Send"]')]
+    return [...document.querySelectorAll([
+      'button[aria-label="Send"]',
+      'button[data-testid="chat-send-button"]',
+      'button[title^="Send"]'
+    ].join(", "))]
       .filter(button => isVisible(button) && !button.disabled)
       .map(button => {
         const r = button.getBoundingClientRect();
@@ -365,6 +375,11 @@
         return { button, score: yDistance + Math.max(0, er.left - r.right) };
       })
       .sort((a, b) => a.score - b.score)[0]?.button;
+  }
+
+  function getPromptEditorText(editor) {
+    if (editor instanceof HTMLTextAreaElement) return editor.value;
+    return editor.innerText || editor.textContent || "";
   }
 
   function parseResetText(text) {
